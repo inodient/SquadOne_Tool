@@ -1,0 +1,35 @@
+{
+  "version": "1",
+  "tools": [
+    {
+      "name": "news_trend.keyword_extractor",
+      "description": "뉴스 엑셀에서 주차별 키워드를 추출해 weekly_keywords.csv/json을 생성합니다.",
+      "http": {"method": "POST", "path": "/v1/tools/news_trend.keyword_extractor"}
+    },
+    {
+      "name": "news_trend.frequency_matrix",
+      "description": "weekly_keywords를 키워드×주차 빈도 행렬로 집계합니다.",
+      "http": {"method": "POST", "path": "/v1/tools/news_trend.frequency_matrix"}
+    },
+    {
+      "name": "news_trend.base_calculation",
+      "description": "빈도 행렬에 TF-IDF 및 장기 롤링 통계를 적용합니다.",
+      "http": {"method": "POST", "path": "/v1/tools/news_trend.base_calculation"}
+    },
+    {
+      "name": "news_trend.z_score_filtering",
+      "description": "base_calculation과 weekly_keywords를 결합해 주차별 z-score 산출물을 생성합니다.",
+      "http": {"method": "POST", "path": "/v1/tools/news_trend.z_score_filtering"}
+    },
+    {
+      "name": "news_trend.trend_extractor",
+      "description": "주차별 트렌드 앵커/컨텍스트/생명주기 기반 시계열 리포트를 생성합니다.",
+      "http": {"method": "POST", "path": "/v1/tools/news_trend.trend_extractor"}
+    },
+    {
+      "name": "news_trend.product_extractor",
+      "description": "트렌드 기반 소비자 컨텍스트를 분석해 1인 셀러용 상품군을 추출합니다. base_start_week/base_end_week(ISO YYYY-Www, 둘 다 지정)로 처리 주차 구간을 명시할 수 있습니다.",
+      "http": {"method": "POST", "path": "/v1/tools/news_trend.product_extractor"}
+    }
+  ]
+}

@@ -1,3 +1,9 @@
+# 전체 개발/검증용 의존성(steps/* + 로컬 MCP + REST 서버 포함)
+# 권장: 프로젝트 루트에서 설치
+#   pip install -r requirements.txt
+# SBG(skip-bigram): kiwipiepy 0.22+ 기본 모델에는 skipbigram/sj.knlm이 없으므로
+# 설치 후 1회 실행 필요:
+#   python scripts/install_kiwi_sbg_addon.py
 pandas
 numpy
 openpyxl
@@ -8,3 +14,8 @@ kiwipiepy
 hdbscan
 gensim
 openai
+sentence-transformers
+google-generativeai
+umap-learn
+fastapi
+uvicorn

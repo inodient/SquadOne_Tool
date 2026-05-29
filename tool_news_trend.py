@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import os
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from steps.base_calculation import run_base_calculation
-from steps.clustering import run_clustering
-from steps.common import configure_logging, get_logger
+from steps.common import configure_logging, ensure_output_dir, get_logger, write_json
 from steps.frequency_matrix import run_frequency_matrix
+from steps.keysentence_extractor import run_keysentence_extractor
 from steps.keyword_extractor import run_keyword_extractor
+from steps.product_extractor import run_product_extractor
+from steps.trend_extractor import run_trend_extractor
 from steps.z_score_filtering import run_z_score_filtering
 
 try:
@@ -16,39 +21,318 @@ except ImportError:  # pragma: no cover
     FastMCP = None
 
 
-def run_news_trend_pipeline(target_week: Optional[str] = None) -> Dict[str, Any]:
+def run_news_trend_pipeline(
+    target_week: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    test_week_offset: int = 0,
+    test_max_weeks: Optional[int] = None,
+    test_mode: bool = False,
+    news_keyword: Optional[str] = None,
+    base_start_week: Optional[str] = None,
+    base_end_week: Optional[str] = None,
+) -> Dict[str, Any]:
+    """뉴스 트렌드 파이프라인 1~6단계(키워드 추출 → 빈도 행렬 → 베이스 계산 → z-score → trend_extractor → product_extractor)."""
     logger = get_logger("tool_news_trend")
     started = time.perf_counter()
-    logger.info("뉴스 트렌드 파이프라인 시작 | target_week=%s", target_week)
+    if target_week is not None:
+        logger.info("target_week는 1~4 파이프라인에서 사용하지 않습니다(무시). | target_week=%s", target_week)
+    logger.info(
+        "뉴스 트렌드 파이프라인 시작 | start_date=%s | end_date=%s | test_mode=%s | test_week_offset=%s | test_max_weeks=%s | news_keyword=%s",
+        start_date,
+        end_date,
+        test_mode,
+        test_week_offset,
+        test_max_weeks,
+        news_keyword,
+    )
 
-    weekly_keywords_path = run_keyword_extractor()
-    frequency_matrix_path = run_frequency_matrix(weekly_keywords_path)
-    base_calculation_path = run_base_calculation(frequency_matrix_path)
-    z_score_path = run_z_score_filtering(base_calculation_path, weekly_keywords_path)
-    clustered_path = run_clustering(z_score_path, target_week=target_week)
+    logger.info("[단계 1/4] keyword_extractor 호출")
+    weekly_keywords = run_keyword_extractor(start_date=start_date, end_date=end_date)
+    logger.info("[단계 1/4] 완료 | csv=%s", weekly_keywords["csv"])
+
+    logger.info("[단계 2/4] frequency_matrix 호출 | input=%s", weekly_keywords["csv"])
+    frequency_matrix = run_frequency_matrix(weekly_keywords["csv"])
+    logger.info("[단계 2/4] 완료 | csv=%s", frequency_matrix["csv"])
+
+    logger.info("[단계 3/4] base_calculation 호출 | input=%s", frequency_matrix["csv"])
+    base_calculation = run_base_calculation(frequency_matrix["csv"])
+    logger.info("[단계 3/4] 완료 | csv=%s", base_calculation["csv"])
+
+    logger.info("[단계 4/4] z_score_filtering 호출 | base=%s | weekly=%s", base_calculation["csv"], weekly_keywords["csv"])
+    z_score = run_z_score_filtering(base_calculation["csv"], weekly_keywords)
+    logger.info("[단계 4/4] 완료 | csv=%s", z_score["csv"])
+
+    logger.info("[단계 5/6] keysentence_extractor 호출")
+    keysentence_outputs = run_keysentence_extractor(
+        z_score["high_csv"],
+        weekly_keywords_csv=weekly_keywords["csv"],
+        base_start_week=base_start_week,
+        base_end_week=base_end_week,
+        test_week_offset=test_week_offset,
+        test_max_weeks=test_max_weeks,
+        test_mode=test_mode,
+    )
+    logger.info("[단계 5/6] 완료 | csv=%s", keysentence_outputs["csv"])
+
+    logger.info("[단계 6/6] trend_extractor 호출")
+    trend_outputs = run_trend_extractor(
+        z_score["csv"],
+        z_score["high_csv"],
+        weekly_keywords["csv"],
+        keysentence_csv=keysentence_outputs["csv"],
+        base_start_week=base_start_week,
+        base_end_week=base_end_week,
+        test_week_offset=test_week_offset,
+        test_max_weeks=test_max_weeks,
+        test_mode=test_mode,
+    )
+    logger.info("[단계 6/6] 완료 | report_csv=%s", trend_outputs["report_csv"])
+
+    logger.info("[단계 7/7] product_extractor 호출")
+    product_outputs = run_product_extractor(
+        trend_outputs["report_csv"],
+        test_week_offset=test_week_offset,
+        test_max_weeks=test_max_weeks,
+        test_mode=test_mode,
+        news_keyword=news_keyword,
+        base_start_week=base_start_week,
+        base_end_week=base_end_week,
+    )
+    logger.info("[단계 7/7] 완료 | report_csv=%s", product_outputs["report_csv"])
+
+    output_dir = ensure_output_dir()
+    summary_path = output_dir / "pipeline_summary.json"
+    summary_payload: Dict[str, Any] = {
+        "status": "success",
+        "target_week": target_week,
+        "start_date": start_date,
+        "end_date": end_date,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "outputs": {
+            "weekly_keywords": {"csv": str(weekly_keywords["csv"]), "json": str(weekly_keywords["json"])},
+            "frequency_matrix": {"csv": str(frequency_matrix["csv"]), "json": str(frequency_matrix["json"])},
+            "base_calculation": {"csv": str(base_calculation["csv"]), "json": str(base_calculation["json"])},
+            "z_score_keywords": {"csv": str(z_score["csv"]), "json": str(z_score["json"])},
+            "z_score_keywords_high": {
+                "csv": str(z_score["high_csv"]),
+                "json": str(z_score["high_json"]),
+            },
+            "z_score_keywords_group": {
+                "csv": str(z_score["group_csv"]),
+                "json": str(z_score["group_json"]),
+            },
+            "keysentence_summary": {
+                "csv": str(keysentence_outputs["csv"]),
+                "json": str(keysentence_outputs["json"]),
+            },
+            "trend_anchors": {"csv": str(trend_outputs["anchors_csv"]), "json": str(trend_outputs["anchors_json"])},
+            "trend_contexts": {
+                "csv": str(trend_outputs["contexts_csv"]),
+                "json": str(trend_outputs["contexts_json"]),
+            },
+            "trend_timeseries_report": {
+                "csv": str(trend_outputs["report_csv"]),
+                "json": str(trend_outputs["report_json"]),
+            },
+            "trend_group_report": {
+                "csv": str(trend_outputs["group_report_csv"]),
+                "json": str(trend_outputs["group_report_json"]),
+            },
+            "trend_dashboard_timeseries": {
+                "csv": str(trend_outputs["dashboard_csv"]),
+                "json": str(trend_outputs["dashboard_json"]),
+            },
+            "product_context_report": {
+                "csv": str(product_outputs["context_csv"]),
+                "json": str(product_outputs["context_json"]),
+            },
+            "product_candidates": {
+                "csv": str(product_outputs["products_csv"]),
+                "json": str(product_outputs["products_json"]),
+            },
+            "product_extractor_report": {
+                "csv": str(product_outputs["report_csv"]),
+                "json": str(product_outputs["report_json"]),
+            },
+        },
+    }
+    elapsed = round(time.perf_counter() - started, 3)
+    summary_payload["elapsed_seconds"] = elapsed
+    write_json(summary_payload, summary_path, indent=2)
 
     result = {
         "status": "success",
         "outputs": {
-            "weekly_keywords_csv": str(weekly_keywords_path),
-            "frequency_matrix_csv": str(frequency_matrix_path),
-            "base_calculation_csv": str(base_calculation_path),
-            "z_score_keywords_csv": str(z_score_path),
-            "clustered_keywords_csv": str(clustered_path),
+            "weekly_keywords_csv": str(weekly_keywords["csv"]),
+            "weekly_keywords_json": str(weekly_keywords["json"]),
+            "frequency_matrix_csv": str(frequency_matrix["csv"]),
+            "frequency_matrix_json": str(frequency_matrix["json"]),
+            "base_calculation_csv": str(base_calculation["csv"]),
+            "base_calculation_json": str(base_calculation["json"]),
+            "z_score_keywords_csv": str(z_score["csv"]),
+            "z_score_keywords_json": str(z_score["json"]),
+            "z_score_keywords_high_csv": str(z_score["high_csv"]),
+            "z_score_keywords_high_json": str(z_score["high_json"]),
+            "z_score_keywords_group_csv": str(z_score["group_csv"]),
+            "z_score_keywords_group_json": str(z_score["group_json"]),
+            "keysentence_summary_csv": str(keysentence_outputs["csv"]),
+            "keysentence_summary_json": str(keysentence_outputs["json"]),
+            "trend_anchors_csv": str(trend_outputs["anchors_csv"]),
+            "trend_anchors_json": str(trend_outputs["anchors_json"]),
+            "trend_contexts_csv": str(trend_outputs["contexts_csv"]),
+            "trend_contexts_json": str(trend_outputs["contexts_json"]),
+            "trend_timeseries_report_csv": str(trend_outputs["report_csv"]),
+            "trend_timeseries_report_json": str(trend_outputs["report_json"]),
+            "trend_group_report_csv": str(trend_outputs["group_report_csv"]),
+            "trend_group_report_json": str(trend_outputs["group_report_json"]),
+            "trend_dashboard_timeseries_csv": str(trend_outputs["dashboard_csv"]),
+            "trend_dashboard_timeseries_json": str(trend_outputs["dashboard_json"]),
+            "product_context_report_csv": str(product_outputs["context_csv"]),
+            "product_context_report_json": str(product_outputs["context_json"]),
+            "product_candidates_csv": str(product_outputs["products_csv"]),
+            "product_candidates_json": str(product_outputs["products_json"]),
+            "product_extractor_report_csv": str(product_outputs["report_csv"]),
+            "product_extractor_report_json": str(product_outputs["report_json"]),
+            "pipeline_summary_json": str(summary_path),
+        },
+        "params": {
+            "target_week": target_week,
+            "start_date": start_date,
+            "end_date": end_date,
+            "test_week_offset": test_week_offset,
+            "test_max_weeks": test_max_weeks,
+            "test_mode": test_mode,
+            "news_keyword": news_keyword,
+            "base_start_week": base_start_week,
+            "base_end_week": base_end_week,
         },
     }
-    logger.info("뉴스 트렌드 파이프라인 완료 | %.2fs", time.perf_counter() - started)
+    logger.info("뉴스 트렌드 파이프라인 완료 | %.2fs", elapsed)
     return result
 
 
 if FastMCP is not None:
-    configure_logging("INFO")
+    configure_logging(
+        os.environ.get("MCP_LOG_LEVEL", "INFO"),
+        os.environ.get("MCP_LOG_FILE") or None,
+        stream=os.environ.get("MCP_LOG_STREAM", "stderr"),
+        replace_root_handlers=os.environ.get("MCP_LOG_REPLACE_ROOT", "1").lower() in ("1", "true", "yes"),
+    )
     mcp = FastMCP("tool_news_trend")
+    _mcp_logger = get_logger("tool_news_trend.mcp")
 
     @mcp.tool(name="run_news_trend")
-    def run_news_trend(target_week: Optional[str] = None) -> Dict[str, Any]:
-        """10년 뉴스 트렌드 분석 파이프라인 실행."""
-        return run_news_trend_pipeline(target_week=target_week)
+    def run_news_trend(
+        target_week: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        test_week_offset: int = 0,
+        test_max_weeks: Optional[int] = None,
+        test_mode: bool = False,
+        news_keyword: Optional[str] = None,
+        base_start_week: Optional[str] = None,
+        base_end_week: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """뉴스 트렌드 분석 파이프라인(1~6단계) 실행."""
+        _mcp_logger.info(
+            "MCP 도구 run_news_trend | START | target_week=%s | start_date=%s | end_date=%s | test_mode=%s | test_week_offset=%s | test_max_weeks=%s | news_keyword=%s",
+            target_week,
+            start_date,
+            end_date,
+            test_mode,
+            test_week_offset,
+            test_max_weeks,
+            news_keyword,
+        )
+        t0 = time.perf_counter()
+        try:
+            out = run_news_trend_pipeline(
+                target_week=target_week,
+                start_date=start_date,
+                end_date=end_date,
+                test_week_offset=test_week_offset,
+                test_max_weeks=test_max_weeks,
+                test_mode=test_mode,
+                news_keyword=news_keyword,
+                base_start_week=base_start_week,
+                base_end_week=base_end_week,
+            )
+            _mcp_logger.info(
+                "MCP 도구 run_news_trend | END | elapsed=%.2fs | status=%s",
+                time.perf_counter() - t0,
+                out.get("status"),
+            )
+            return out
+        except Exception:
+            _mcp_logger.exception(
+                "MCP 도구 run_news_trend | FAIL | elapsed=%.2fs",
+                time.perf_counter() - t0,
+            )
+            raise
+
+    @mcp.tool(name="run_product_extractor")
+    def run_product_extractor_tool(
+        trend_timeseries_csv: Optional[str] = None,
+        news_keyword: Optional[str] = None,
+        base_start_week: Optional[str] = None,
+        base_end_week: Optional[str] = None,
+        test_week_offset: int = 0,
+        test_max_weeks: Optional[int] = None,
+        test_mode: bool = False,
+        mode: str = "full",
+        context_report_input: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """상품 추출 도구 단독 실행(context 분석 + 상품군 추출)."""
+        _mcp_logger.info(
+            "MCP 도구 run_product_extractor | START | trend_timeseries_csv=%s | news_keyword=%s | base_start_week=%s | base_end_week=%s | mode=%s | test_mode=%s | test_week_offset=%s | test_max_weeks=%s",
+            trend_timeseries_csv,
+            news_keyword,
+            base_start_week,
+            base_end_week,
+            mode,
+            test_mode,
+            test_week_offset,
+            test_max_weeks,
+        )
+        t0 = time.perf_counter()
+        try:
+            csv_path = Path(trend_timeseries_csv) if trend_timeseries_csv else ensure_output_dir() / "trend_timeseries_report.csv"
+            if not csv_path.is_absolute():
+                csv_path = (Path(__file__).resolve().parent / csv_path).resolve()
+            out = run_product_extractor(
+                csv_path,
+                news_keyword=news_keyword,
+                test_week_offset=test_week_offset,
+                test_max_weeks=test_max_weeks,
+                test_mode=test_mode,
+                mode=mode,
+                context_report_input=context_report_input,
+                base_start_week=base_start_week,
+                base_end_week=base_end_week,
+            )
+            _mcp_logger.info(
+                "MCP 도구 run_product_extractor | END | elapsed=%.2fs | report_csv=%s",
+                time.perf_counter() - t0,
+                out.get("report_csv"),
+            )
+            return {
+                "status": "success",
+                "outputs": {
+                    "product_context_report_csv": str(out["context_csv"]),
+                    "product_context_report_json": str(out["context_json"]),
+                    "product_candidates_csv": str(out["products_csv"]),
+                    "product_candidates_json": str(out["products_json"]),
+                    "product_extractor_report_csv": str(out["report_csv"]),
+                    "product_extractor_report_json": str(out["report_json"]),
+                },
+            }
+        except Exception:
+            _mcp_logger.exception(
+                "MCP 도구 run_product_extractor | FAIL | elapsed=%.2fs",
+                time.perf_counter() - t0,
+            )
+            raise
 
 
 if __name__ == "__main__":

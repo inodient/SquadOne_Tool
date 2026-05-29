@@ -1,0 +1,6 @@
+# REST 서버 전용 최소 의존성(배포/기동 전용)
+# 권장:
+#   pip install -r rest_mcp_server/requirements.txt
+# 참고: steps/* 실행(키워드 추출/행렬/TF-IDF/z-score)에는 루트 requirements가 필요합니다.
+fastapi>=0.110
+uvicorn[standard]>=0.27
