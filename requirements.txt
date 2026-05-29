@@ -1,0 +1,10 @@
+pandas
+numpy
+openpyxl
+scikit-learn
+fastmcp
+mcp
+kiwipiepy
+hdbscan
+gensim
+openai

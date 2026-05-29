@@ -1,0 +1,28 @@
+{
+  "paths": {
+    "news_dir": "data/news",
+    "output_dir": "data/output",
+    "stopwords_path": "config/stopwords.txt"
+  },
+  "news": {
+    "excel_pattern": "NewsResult_*.xlsx",
+    "candidate_text_columns": ["content", "본문", "text", "article", "기사내용", "title", "제목"],
+    "source_columns": ["source", "출처", "publisher", "언론사"]
+  },
+  "tfidf": {
+    "min_df": 50,
+    "max_df": 0.7
+  },
+  "window": {
+    "long_term_weeks": 52,
+    "short_term_weeks": 1
+  },
+  "z_score": {
+    "moving_average_span": 4
+  },
+  "clustering": {
+    "top_n_keywords": 10,
+    "target_week": null,
+    "min_cluster_size": 2
+  }
+}
