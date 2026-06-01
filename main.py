@@ -5,8 +5,12 @@ import asyncio
 import json
 import sys
 
+from db.config import load_shared_env
 from steps.common import configure_logging, get_logger
 from tool_news_trend import run_news_trend_pipeline
+
+# 프로젝트 루트 .env를 1회 로딩(멱등) — DB/LLM/임베딩/로깅 env를 일관 적용.
+load_shared_env()
 
 
 async def _run_mcp_client(

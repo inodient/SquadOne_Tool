@@ -1,7 +1,7 @@
-"""DB/Qdrant 접속 설정 — 공유 .env 로딩 + psycopg3 DSN.
+"""DB/Qdrant 접속 설정 — 프로젝트 .env 로딩 + psycopg3 DSN.
 
-자격증명은 SquadOne_AI/.env의 POSTGRES_* / QDRANT_* 변수를 재사용한다.
-- 로딩 경로는 환경변수 SQUADONE_ENV_FILE로 주입(기본값 ../SquadOne_AI/.env).
+자격증명은 SquadOne_Tool 루트 .env의 POSTGRES_* / QDRANT_* 변수를 사용한다.
+- 로딩 경로는 환경변수 SQUADONE_ENV_FILE로 주입(기본값 프로젝트 루트 .env).
 - 이미 export된 변수는 덮어쓰지 않는다(override=False).
 - 자격증명은 코드에 하드코딩하지 않는다.
 """
@@ -19,8 +19,8 @@ except ImportError:  # pragma: no cover - 설치 전 폴백
 # 본 프로젝트 격리 스키마
 SCHEMA = "newstrend"
 
-# 기본 공유 .env 경로: SquadOne_Tool 과 형제 디렉터리인 SquadOne_AI
-_DEFAULT_ENV = Path(__file__).resolve().parent.parent.parent / "SquadOne_AI" / ".env"
+# 기본 .env 경로: SquadOne_Tool 프로젝트 루트
+_DEFAULT_ENV = Path(__file__).resolve().parent.parent / ".env"
 
 _loaded = False
 

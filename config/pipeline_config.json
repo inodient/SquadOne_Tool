@@ -5,6 +5,7 @@
     "stopwords_path": "config/stopwords.txt"
   },
   "news": {
+    "input_source": "qdrant",
     "excel_pattern": "NewsResult_*.xlsx",
     "candidate_text_columns": ["본문", "content", "text", "article", "기사내용", "title", "제목"],
     "source_columns": ["언론사", "source", "출처", "publisher"],
@@ -23,8 +24,7 @@
   },
   "z_score": {
     "moving_average_span": 4,
-    "high_z_score_threshold": 2.0,
-    "group_similarity_threshold": 0.82
+    "high_z_score_threshold": 2.0
   },
   "keysentence_extractor": {
     "keywords_per_week": 8,

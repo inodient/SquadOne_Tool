@@ -1,60 +1,34 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import pandas as pd
 
-from steps.common import (
-    ensure_output_dir,
-    get_logger,
-    log_artifact,
-    log_step,
-    read_csv,
-    write_csv,
-    write_dataframe_json_export,
-)
+from steps.common import get_logger, log_step
+
+from db import repository as repo
 
 
-def run_frequency_matrix(weekly_keywords_path: Path) -> Dict[str, Path]:
+def run_frequency_matrix(weekly_keywords_path: Path) -> Dict[str, object]:
+    """2단계: 주차×키워드 빈도 집계 (SQL 증분).
+
+    P1 변경: dense 피벗 CSV 생성을 폐기하고, 처리된 주차에 대해서만
+    DB의 weekly_keyword_freq 를 재계산(DELETE+INSERT…SELECT)한다.
+    처리 주차는 step1 산출(weekly_keywords.csv)의 week 컬럼에서 가져온다.
+    """
     logger = get_logger("steps.frequency_matrix")
-    with log_step(logger, 2, "frequency_matrix", input=str(weekly_keywords_path.resolve())):
-        output_dir = ensure_output_dir()
-        df = read_csv(weekly_keywords_path)
-        if df.empty:
-            raise ValueError("입력 weekly_keywords.csv가 비어 있습니다.")
+    with log_step(logger, 2, "frequency_matrix", input=str(Path(weekly_keywords_path).resolve())):
+        # 처리 대상 주차만 읽음(week 컬럼만 → 경량)
+        weeks_df = pd.read_csv(weekly_keywords_path, encoding="utf-8-sig", usecols=["week"])
+        weeks: List[str] = sorted(weeks_df["week"].astype(str).unique().tolist())
+        if not weeks:
+            raise ValueError("frequency_matrix: 입력 weekly_keywords 에 week 가 없습니다.")
 
-        matrix = (
-            df.groupby(["keyword", "week"], as_index=False)["count"]
-            .sum()
-            .pivot(index="keyword", columns="week", values="count")
-            .fillna(0)
-            .astype(int)
-            .reset_index()
-        )
-        matrix.columns.name = None
-
-        week_columns = sorted([col for col in matrix.columns if col != "keyword"])
-        matrix = matrix[["keyword", *week_columns]]
-
-        out_path = output_dir / "frequency_matrix.csv"
-        written_path = write_csv(matrix, out_path)
-        json_path = write_dataframe_json_export(
-            matrix,
-            written_path,
-            step="frequency_matrix",
-            extra_meta={"week_columns": week_columns[:50], "week_column_count": len(week_columns)},
-        )
+        n = repo.recompute_weekly_keyword_freq(weeks)
+        total = repo.table_count("weekly_keyword_freq")
         logger.info(
-            "frequency_matrix 요약 | 키워드수=%d | 주차수=%d | csv=%s | json=%s",
-            len(matrix),
-            len(week_columns),
-            written_path,
-            json_path,
+            "frequency_matrix(증분) | 재계산 주차=%d | weekly_keyword_freq 총 행수=%d | weeks=%s..%s",
+            n, total, weeks[0], weeks[-1],
         )
-        log_artifact(logger, "OUTPUT_CSV", written_path)
-        log_artifact(logger, "OUTPUT_JSON", json_path)
-        meta_path = written_path.with_suffix(".meta.json")
-        if meta_path.exists():
-            log_artifact(logger, "OUTPUT_JSON_META", meta_path)
-        return {"csv": written_path, "json": json_path}
+        return {"weeks": weeks, "recomputed_weeks": n, "freq_table": "newstrend.weekly_keyword_freq"}

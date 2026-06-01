@@ -16,6 +16,7 @@ from steps.common import (
     write_csv,
     write_dataframe_json_export,
 )
+from steps.qdrant_news import iter_week_articles, weeks_in_range
 
 try:
     from kiwipiepy import Kiwi
@@ -223,6 +224,112 @@ def _resolve_filename_filter_enabled(raw: object, *, has_user_range: bool) -> bo
     return bool(raw)
 
 
+def _collect_weekly_rows_from_qdrant(
+    *,
+    start_ts: pd.Timestamp | None,
+    end_ts: pd.Timestamp | None,
+    kiwi: "Kiwi | None",
+    stopwords: set[str],
+    config: dict,
+    logger,
+) -> List[Dict[str, str | int]]:
+    """Qdrant 뉴스 컬렉션에서 주차 범위를 전수 수집해 (week, keyword, source, count=1) 행을 만든다."""
+    if start_ts is None or end_ts is None:
+        raise ValueError(
+            "Qdrant 입력 모드는 start_date/end_date(주차 범위)가 필요합니다. "
+            "증분 실행 단위는 주차이며, 전체 재수집이 필요하면 범위를 명시하세요. "
+            "(엑셀 입력으로 되돌리려면 config news.input_source=excel)"
+        )
+    from db.config import qdrant_url as _qdrant_url
+
+    vcfg = config.get("vector_db", {})
+    q_url = str(vcfg.get("qdrant_url") or _qdrant_url())
+    collection = str(vcfg.get("collection", "news_10y_ko_v1"))
+    date_field = str(vcfg.get("date_field", "date"))
+    date_start_field = str(vcfg.get("date_start_field", "file_date_start"))
+    date_end_field = str(vcfg.get("date_end_field", "file_date_end"))
+    timeout_sec = float(vcfg.get("timeout_sec", 30))
+    # 1단계는 기사 실제 발행일(date) 기준 정확 집계 → date-only 필터(파일오버랩 불필요).
+    # date 필드 payload 인덱스 필요(0단계/인프라). docs/QDRANT_CONTRACT.md 참조.
+    include_overlap = False
+
+    weeks = weeks_in_range(start_ts, end_ts)
+    logger.info("Qdrant 입력 | collection=%s | 주차수=%d | %s..%s", collection, len(weeks),
+                weeks[0] if weeks else "-", weeks[-1] if weeks else "-")
+    rows: List[Dict[str, str | int]] = []
+    for week in weeks:
+        n_art = 0
+        for art in iter_week_articles(
+            week, logger=logger, qdrant_url=q_url, collection=collection,
+            date_field=date_field, date_start_field=date_start_field, date_end_field=date_end_field,
+            timeout_sec=timeout_sec, include_file_overlap=include_overlap,
+        ):
+            n_art += 1
+            nouns = _extract_nouns(art["body"], kiwi, stopwords)
+            source_val = art["source"] or "unknown"
+            for keyword in nouns:
+                rows.append({"week": week, "keyword": keyword, "source": str(source_val), "count": 1})
+        logger.info("Qdrant 주차 수집 | week=%s | articles=%d | 누적행=%d", week, n_art, len(rows))
+    return rows
+
+
+def _finalize_weekly(
+    weekly_rows: List[Dict[str, str | int]],
+    *,
+    output_dir: Path,
+    logger,
+    processed_files: int,
+    start_date: str | None,
+    end_date: str | None,
+    use_feature_column_mode: bool,
+    category_filter_values: List[str],
+    write_to_db: bool,
+) -> Dict[str, Path]:
+    """공용 다운스트림: groupby → 병행 CSV 출력 → DB upsert."""
+    result = pd.DataFrame(weekly_rows)
+    if result.empty:
+        raise ValueError("키워드 추출 결과가 비어 있습니다. (입력 범위/소스를 확인하세요)")
+
+    result = (
+        result.groupby(["week", "keyword", "source"], as_index=False)["count"]
+        .sum()
+        .sort_values(["week", "count"], ascending=[True, False])
+    )
+
+    # DB 적재(증분 upsert) — 병행 출력
+    if write_to_db:
+        from db import repository as repo
+
+        db_rows = list(result[["week", "keyword", "source", "count"]].itertuples(index=False, name=None))
+        n_db = repo.upsert_weekly_keywords(db_rows)
+        logger.info("DB 적재 weekly_keywords | upsert=%d행", n_db)
+
+    out_path = output_dir / "weekly_keywords.csv"
+    written_path = write_csv(result, out_path)
+    json_path = write_dataframe_json_export(
+        result,
+        written_path,
+        step="keyword_extractor",
+        extra_meta={
+            "processed_files": processed_files,
+            "start_date": start_date,
+            "end_date": end_date,
+            "use_feature_column_mode": use_feature_column_mode,
+            "category_filter_values": category_filter_values,
+        },
+    )
+    meta_path = written_path.with_suffix(".meta.json")
+    logger.info(
+        "keyword_extractor 요약 | 처리파일=%d | 행수=%d | csv=%s | json=%s",
+        processed_files, len(result), written_path, json_path,
+    )
+    log_artifact(logger, "OUTPUT_CSV", written_path)
+    log_artifact(logger, "OUTPUT_JSON", json_path)
+    if meta_path.exists():
+        log_artifact(logger, "OUTPUT_JSON_META", meta_path)
+    return {"csv": written_path, "json": json_path}
+
+
 def run_keyword_extractor(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -274,6 +381,30 @@ def run_keyword_extractor(
             use_feature_column_mode,
             category_filter_values,
         )
+
+        # 입력 소스 분기: 기본 Qdrant(증분), 폴백 excel
+        input_source = str(news_cfg.get("input_source", "qdrant")).strip().lower()
+        logger.info("입력 소스 | input_source=%s", input_source)
+        if input_source == "qdrant":
+            weekly_rows = _collect_weekly_rows_from_qdrant(
+                start_ts=start_ts,
+                end_ts=end_ts,
+                kiwi=kiwi,
+                stopwords=stopwords,
+                config=config,
+                logger=logger,
+            )
+            return _finalize_weekly(
+                weekly_rows,
+                output_dir=output_dir,
+                logger=logger,
+                processed_files=0,
+                start_date=start_date,
+                end_date=end_date,
+                use_feature_column_mode=use_feature_column_mode,
+                category_filter_values=category_filter_values,
+                write_to_db=True,
+            )
 
         files = sorted(news_dir.glob(news_cfg["excel_pattern"]))
         if not files:
@@ -435,8 +566,7 @@ def run_keyword_extractor(
             processed_files,
         )
 
-        result = pd.DataFrame(weekly_rows)
-        if result.empty:
+        if not weekly_rows:
             hint = ""
             if dataset_range is not None and (start_ts is not None or end_ts is not None):
                 hint = (
@@ -451,36 +581,14 @@ def run_keyword_extractor(
                 + hint
             )
 
-        result = (
-            result.groupby(["week", "keyword", "source"], as_index=False)["count"]
-            .sum()
-            .sort_values(["week", "count"], ascending=[True, False])
+        return _finalize_weekly(
+            weekly_rows,
+            output_dir=output_dir,
+            logger=logger,
+            processed_files=processed_files,
+            start_date=start_date,
+            end_date=end_date,
+            use_feature_column_mode=use_feature_column_mode,
+            category_filter_values=category_filter_values,
+            write_to_db=True,
         )
-
-        out_path = output_dir / "weekly_keywords.csv"
-        written_path = write_csv(result, out_path)
-        json_path = write_dataframe_json_export(
-            result,
-            written_path,
-            step="keyword_extractor",
-            extra_meta={
-                "processed_files": processed_files,
-                "start_date": start_date,
-                "end_date": end_date,
-                "use_feature_column_mode": use_feature_column_mode,
-                "category_filter_values": category_filter_values,
-            },
-        )
-        meta_path = written_path.with_suffix(".meta.json")
-        logger.info(
-            "keyword_extractor 요약 | 처리파일=%d | 행수=%d | csv=%s | json=%s",
-            processed_files,
-            len(result),
-            written_path,
-            json_path,
-        )
-        log_artifact(logger, "OUTPUT_CSV", written_path)
-        log_artifact(logger, "OUTPUT_JSON", json_path)
-        if meta_path.exists():
-            log_artifact(logger, "OUTPUT_JSON_META", meta_path)
-        return {"csv": written_path, "json": json_path}
