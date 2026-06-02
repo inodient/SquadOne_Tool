@@ -6,14 +6,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from db.config import load_shared_env
 from steps.base_calculation import run_base_calculation
 from steps.common import configure_logging, ensure_output_dir, get_logger, write_json
 from steps.frequency_matrix import run_frequency_matrix
-from steps.keysentence_extractor import run_keysentence_extractor
 from steps.keyword_extractor import run_keyword_extractor
 from steps.product_extractor import run_product_extractor
 from steps.trend_extractor import run_trend_extractor
 from steps.z_score_filtering import run_z_score_filtering
+
+# 프로젝트 루트 .env를 1회 로딩(멱등) — DB/LLM/임베딩/로깅 env를 일관 적용.
+load_shared_env()
 
 try:
     from fastmcp import FastMCP
@@ -53,41 +56,35 @@ def run_news_trend_pipeline(
 
     logger.info("[단계 2/4] frequency_matrix 호출 | input=%s", weekly_keywords["csv"])
     frequency_matrix = run_frequency_matrix(weekly_keywords["csv"])
-    logger.info("[단계 2/4] 완료 | csv=%s", frequency_matrix["csv"])
+    logger.info("[단계 2/4] 완료 | freq_table=%s | recomputed_weeks=%s",
+                frequency_matrix["freq_table"], frequency_matrix["recomputed_weeks"])
 
-    logger.info("[단계 3/4] base_calculation 호출 | input=%s", frequency_matrix["csv"])
-    base_calculation = run_base_calculation(frequency_matrix["csv"])
+    logger.info("[단계 3/4] base_calculation 호출 | input=newstrend.weekly_keyword_freq(DB)")
+    base_calculation = run_base_calculation()
     logger.info("[단계 3/4] 완료 | csv=%s", base_calculation["csv"])
 
     logger.info("[단계 4/4] z_score_filtering 호출 | base=%s | weekly=%s", base_calculation["csv"], weekly_keywords["csv"])
     z_score = run_z_score_filtering(base_calculation["csv"], weekly_keywords)
     logger.info("[단계 4/4] 완료 | csv=%s", z_score["csv"])
 
-    logger.info("[단계 5/6] keysentence_extractor 호출")
-    keysentence_outputs = run_keysentence_extractor(
-        z_score["high_csv"],
-        weekly_keywords_csv=weekly_keywords["csv"],
-        base_start_week=base_start_week,
-        base_end_week=base_end_week,
-        test_week_offset=test_week_offset,
-        test_max_weeks=test_max_weeks,
-        test_mode=test_mode,
-    )
-    logger.info("[단계 5/6] 완료 | csv=%s", keysentence_outputs["csv"])
-
-    logger.info("[단계 6/6] trend_extractor 호출")
+    # P2: 5단계(keysentence)는 6단계(trend_extractor)에 흡수됨(2-phase 벡터검색). 별도 호출 없음.
+    logger.info("[단계 5+6] trend_extractor 호출 (keysentence 통합)")
     trend_outputs = run_trend_extractor(
         z_score["csv"],
         z_score["high_csv"],
         weekly_keywords["csv"],
-        keysentence_csv=keysentence_outputs["csv"],
         base_start_week=base_start_week,
         base_end_week=base_end_week,
         test_week_offset=test_week_offset,
         test_max_weeks=test_max_weeks,
         test_mode=test_mode,
     )
-    logger.info("[단계 6/6] 완료 | report_csv=%s", trend_outputs["report_csv"])
+    keysentence_outputs = {
+        "csv": Path(trend_outputs["keysentence_csv"]),
+        "json": Path(trend_outputs["keysentence_json"]),
+    }
+    logger.info("[단계 5+6] 완료 | report_csv=%s | keysentence_csv=%s",
+                trend_outputs["report_csv"], trend_outputs["keysentence_csv"])
 
     logger.info("[단계 7/7] product_extractor 호출")
     product_outputs = run_product_extractor(
@@ -111,16 +108,12 @@ def run_news_trend_pipeline(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "outputs": {
             "weekly_keywords": {"csv": str(weekly_keywords["csv"]), "json": str(weekly_keywords["json"])},
-            "frequency_matrix": {"csv": str(frequency_matrix["csv"]), "json": str(frequency_matrix["json"])},
+            "frequency_matrix": {"table": frequency_matrix["freq_table"], "recomputed_weeks": frequency_matrix["recomputed_weeks"]},
             "base_calculation": {"csv": str(base_calculation["csv"]), "json": str(base_calculation["json"])},
             "z_score_keywords": {"csv": str(z_score["csv"]), "json": str(z_score["json"])},
             "z_score_keywords_high": {
                 "csv": str(z_score["high_csv"]),
                 "json": str(z_score["high_json"]),
-            },
-            "z_score_keywords_group": {
-                "csv": str(z_score["group_csv"]),
-                "json": str(z_score["group_json"]),
             },
             "keysentence_summary": {
                 "csv": str(keysentence_outputs["csv"]),
@@ -166,16 +159,13 @@ def run_news_trend_pipeline(
         "outputs": {
             "weekly_keywords_csv": str(weekly_keywords["csv"]),
             "weekly_keywords_json": str(weekly_keywords["json"]),
-            "frequency_matrix_csv": str(frequency_matrix["csv"]),
-            "frequency_matrix_json": str(frequency_matrix["json"]),
+            "frequency_matrix_table": frequency_matrix["freq_table"],
             "base_calculation_csv": str(base_calculation["csv"]),
             "base_calculation_json": str(base_calculation["json"]),
             "z_score_keywords_csv": str(z_score["csv"]),
             "z_score_keywords_json": str(z_score["json"]),
             "z_score_keywords_high_csv": str(z_score["high_csv"]),
             "z_score_keywords_high_json": str(z_score["high_json"]),
-            "z_score_keywords_group_csv": str(z_score["group_csv"]),
-            "z_score_keywords_group_json": str(z_score["group_json"]),
             "keysentence_summary_csv": str(keysentence_outputs["csv"]),
             "keysentence_summary_json": str(keysentence_outputs["json"]),
             "trend_anchors_csv": str(trend_outputs["anchors_csv"]),

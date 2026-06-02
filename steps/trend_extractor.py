@@ -23,6 +23,9 @@ from steps.common import (
     write_dataframe_json_export,
 )
 from steps.llm_factory import get_llm
+from steps.qdrant_search import search_contexts
+from steps.keysentence_extractor import _build_keyword_prompt
+from db import repository as repo
 
 
 def _parse_week_to_ts(week_label: str) -> pd.Timestamp:
@@ -244,7 +247,8 @@ def _map_hit_to_context(hit: dict[str, Any], *, keyword_norm: str) -> dict[str, 
     t_norm = _normalize_keyword(text)
     bumped = score + (0.005 if keyword_norm and keyword_norm in t_norm else 0.0)
     return {
-        "doc_id": pid,
+        # 근거 ID는 계약상 payload news_id 사용(없으면 point id 폴백). docs/QDRANT_CONTRACT.md
+        "doc_id": str(payload.get("news_id") or pid or ""),
         "score": bumped,
         "title": str(payload.get("title") or payload.get("제목") or ""),
         "summary_or_body": str(
@@ -629,7 +633,7 @@ def _query_qdrant_contexts(
             score = 1.0 if keyword_norm and keyword_norm in t_norm else 0.0
             ranked_local.append(
                 {
-                    "doc_id": p.get("id"),
+                    "doc_id": str(payload.get("news_id") or p.get("id") or ""),
                     "score": score,
                     "title": payload.get("title") or payload.get("제목") or "",
                     "summary_or_body": payload.get("body")
@@ -929,7 +933,6 @@ def run_trend_extractor(
     z_score_csv: Path,
     high_z_score_csv: Path,
     weekly_keywords_csv: Path,
-    keysentence_csv: Path | None = None,
     *,
     base_start_week: str | None = None,
     base_end_week: str | None = None,
@@ -940,12 +943,11 @@ def run_trend_extractor(
     logger = get_logger("steps.trend_extractor")
     with log_step(
         logger,
-        5,
+        "5+6",
         "trend_extractor",
         z_score_csv=str(z_score_csv.resolve()),
         high_z_score_csv=str(high_z_score_csv.resolve()),
         weekly_keywords_csv=str(weekly_keywords_csv.resolve()),
-        keysentence_csv=str(keysentence_csv.resolve()) if keysentence_csv else "",
     ):
         cfg = load_config()
         tr_cfg = cfg.get("trend_extractor", {})
@@ -1011,19 +1013,8 @@ def run_trend_extractor(
         z_df = read_csv(z_score_csv)
         high_df = read_csv(high_z_score_csv) if high_z_score_csv.exists() else pd.DataFrame()
         wk_df = read_csv(weekly_keywords_csv)
-        query_text_map: dict[tuple[str, str], str] = {}
-        if keysentence_csv and keysentence_csv.exists():
-            ks_df = read_csv(keysentence_csv)
-            if not ks_df.empty and {"week", "keyword"}.issubset(set(ks_df.columns)):
-                qcol = "query_text" if "query_text" in ks_df.columns else ("key_sentence" if "key_sentence" in ks_df.columns else "")
-                if qcol:
-                    ks_df["week"] = ks_df["week"].astype(str)
-                    ks_df["keyword"] = ks_df["keyword"].astype(str)
-                    for _, row in ks_df.iterrows():
-                        qtxt = str(row.get(qcol) or "").strip()
-                        if qtxt:
-                            query_text_map[(str(row["week"]), str(row["keyword"]))] = qtxt
-            logger.info("keysentence query map loaded | rows=%d | unique=%d", len(ks_df), len(query_text_map))
+        # P2: keysentence는 더 이상 외부 입력이 아니라 이 단계에서 2-phase 검색으로 생성한다.
+        keysentence_max_titles = int(cfg.get("keysentence_extractor", {}).get("max_titles_for_prompt", 25))
         if z_df.empty or wk_df.empty:
             raise ValueError("trend_extractor 입력 CSV가 비어 있습니다.")
 
@@ -1065,6 +1056,7 @@ def run_trend_extractor(
         context_rows: list[dict[str, Any]] = []
         report_rows: list[dict[str, Any]] = []
         group_rows: list[dict[str, Any]] = []
+        keysentence_rows: list[dict[str, Any]] = []  # P2: 2-phase 검색 부산물
         prev_group_items: list[dict[str, Any]] = []
         slot_seq = 0
 
@@ -1139,48 +1131,24 @@ def run_trend_extractor(
                 )
 
                 _kw_log = str(keyword).replace("\n", " ")[:100]
-                query_text = query_text_map.get((week, keyword), "").strip()
-                query_for_search = query_text if query_text else keyword
+                # 2-phase 검색(P2): ① 키워드로 거친 검색 → ② LLM 요약(query_text) → ③ 요약 시드로 정밀 검색
+                c0 = search_contexts(week, keyword, keyword, logger=logger, config=cfg, top_k=vector_top_k)
+                if c0:
+                    ks_articles = [
+                        {"title": d.get("title"), "body": d.get("summary_or_body"), "source": d.get("source")}
+                        for d in c0[: max(1, keysentence_max_titles)]
+                    ]
+                    key_sentence = (llm_weekly.invoke(_build_keyword_prompt(week, keyword, ks_articles)) or "").strip()
+                else:
+                    key_sentence = ""
+                query_for_search = key_sentence if key_sentence else keyword
                 logger.info(
                     "TREND_EXTRACTOR_PHASE | step=qdrant_context | week_index=%d/%d | kw_index=%d/%d | week=%s | "
                     "keyword=%s | z=%.3f | count=%d | query_chars=%d | query_from=%s",
-                    week_idx + 1,
-                    len(weeks),
-                    kw_idx,
-                    len(selected_keywords),
-                    week,
-                    _kw_log,
-                    z_score,
-                    count,
-                    len(str(query_for_search)),
-                    "keysentence" if query_text else "keyword",
+                    week_idx + 1, len(weeks), kw_idx, len(selected_keywords), week, _kw_log,
+                    z_score, count, len(str(query_for_search)), "keysentence" if key_sentence else "keyword",
                 )
-                contexts = _query_qdrant_contexts(
-                    logger=logger,
-                    qdrant_url=qdrant_url,
-                    collection=collection,
-                    date_field=date_field,
-                    date_start_field=date_start_field,
-                    date_end_field=date_end_field,
-                    week=week,
-                    keyword=keyword,
-                    query_text=query_for_search,
-                    top_k=vector_top_k,
-                    timeout_sec=timeout_sec,
-                    enable_query_embedding=enable_query_embedding,
-                    embed_model=str(embed_model).strip() if embed_model else None,
-                    embed_device=str(embed_device).strip() if embed_device else None,
-                    query_vector_name=query_vector_name,
-                    use_server_date_filter=use_server_date_filter,
-                    vector_search_limit_multiplier=vector_search_limit_multiplier,
-                    vector_search_min_limit=vector_search_min_limit,
-                    scroll_limit_multiplier=scroll_limit_multiplier,
-                    scroll_min_limit=scroll_min_limit,
-                    scroll_max_pages=scroll_max_pages,
-                    week_scroll_mode=week_scroll_mode,
-                    scroll_full_week_max_pages=scroll_full_week_max_pages,
-                    server_week_filter_file_overlap=server_week_filter_file_overlap,
-                )
+                contexts = search_contexts(week, keyword, query_for_search, logger=logger, config=cfg, top_k=vector_top_k)
                 logger.info(
                     "TREND_EXTRACTOR_PHASE | step=qdrant_context_done | week=%s | keyword=%s | context_docs=%d",
                     week,
@@ -1191,6 +1159,17 @@ def run_trend_extractor(
                 for ctx in contexts:
                     doc_ids.append(str(ctx.get("doc_id", "")))
                     context_rows.append({"week": week, "keyword": keyword, **ctx})
+
+                # keysentence 부산물 적립(evidence_doc_ids = news_id)
+                _uniq_docs = list(dict.fromkeys([d for d in doc_ids if d]))
+                keysentence_rows.append({
+                    "week": week,
+                    "keyword": keyword,
+                    "query_text": key_sentence,
+                    "key_sentence": key_sentence,
+                    "evidence_doc_ids": _uniq_docs,
+                    "evidence_count": len(contexts),
+                })
 
                 evidence_text = " ".join(str(c.get("summary_or_body", ""))[:220] for c in contexts[:3]).strip()
                 feature_text = str(query_for_search or evidence_text or keyword).strip()
@@ -1516,12 +1495,53 @@ def run_trend_extractor(
         dashboard_csv = write_csv(dashboard_df, output_dir / "trend_dashboard_timeseries.csv")
         dashboard_json = write_dataframe_json_export(dashboard_df, dashboard_csv, step="trend_extractor_dashboard")
 
+        # ── keysentence 산출(P2 부산물): 병행 CSV ──
+        ks_df = pd.DataFrame(keysentence_rows) if keysentence_rows else pd.DataFrame(
+            columns=["week", "keyword", "query_text", "key_sentence", "evidence_doc_ids", "evidence_count"]
+        )
+        ks_csv_df = ks_df.copy()
+        if not ks_csv_df.empty:
+            ks_csv_df["evidence_doc_ids"] = ks_csv_df["evidence_doc_ids"].apply(
+                lambda v: "|".join(v) if isinstance(v, (list, tuple)) else str(v or "")
+            )
+        keysentence_csv = write_csv(ks_csv_df, output_dir / "keysentence_summary.csv")
+        keysentence_json = write_dataframe_json_export(ks_csv_df, keysentence_csv, step="keysentence")
+
+        # ── DB 적재(주차 단위 replace): keysentence + trend(timeseries/contexts/groups) ──
+        cx_db = contexts_df.rename(columns={"summary_or_body": "snippet"}) if not contexts_df.empty else pd.DataFrame(
+            columns=["week", "keyword", "doc_id", "score", "snippet"]
+        )
+        if "snippet" not in cx_db.columns:
+            cx_db["snippet"] = ""
+        if not group_df.empty:
+            gp_db = pd.DataFrame({
+                "week": group_df["week"],
+                "group_id": group_df["group_id"],
+                "members": group_df.apply(
+                    lambda r: {
+                        "keywords": str(r.get("keywords", "") or "").split("|") if r.get("keywords") else [],
+                        "anchor_keywords": str(r.get("anchor_keywords", "") or "").split("|") if r.get("anchor_keywords") else [],
+                        "group_summary": str(r.get("group_summary", "") or ""),
+                        "group_status": str(r.get("group_status", "") or ""),
+                    },
+                    axis=1,
+                ),
+                "group_score": group_df["group_score"],
+                "cohesion": group_df.get("cohesion", 0.0),
+            })
+        else:
+            gp_db = pd.DataFrame(columns=["week", "group_id", "members", "group_score", "cohesion"])
+        n_ks = repo.write_keysentence(ks_df, weeks)
+        n_trend = repo.write_trend(report_df, cx_db, gp_db, weeks)
+        logger.info("DB 적재 | keysentence=%d | trend=%s", n_ks, n_trend)
+
         for label, p in [
             ("OUTPUT_ANCHORS_CSV", anchors_csv),
             ("OUTPUT_CONTEXTS_CSV", contexts_csv),
             ("OUTPUT_REPORT_CSV", report_csv),
             ("OUTPUT_GROUP_REPORT_CSV", group_csv),
             ("OUTPUT_DASHBOARD_CSV", dashboard_csv),
+            ("OUTPUT_KEYSENTENCE_CSV", keysentence_csv),
         ]:
             log_artifact(logger, label, p)
 
@@ -1536,4 +1556,6 @@ def run_trend_extractor(
             "group_report_json": group_json,
             "dashboard_csv": dashboard_csv,
             "dashboard_json": dashboard_json,
+            "keysentence_csv": keysentence_csv,
+            "keysentence_json": keysentence_json,
         }

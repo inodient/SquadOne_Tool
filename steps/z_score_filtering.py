@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict
 
@@ -19,54 +17,7 @@ from steps.common import (
     write_dataframe_json_export,
 )
 
-
-def _normalize_keyword_for_grouping(keyword: str) -> str:
-    text = str(keyword).strip().lower()
-    text = re.sub(r"\s+", "", text)
-    text = re.sub(r"[^0-9a-z가-힣]", "", text)
-    return text
-
-
-def _keyword_similarity(a: str, b: str) -> float:
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-    if a in b or b in a:
-        shorter = min(len(a), len(b))
-        longer = max(len(a), len(b))
-        if longer > 0:
-            return shorter / longer
-    return SequenceMatcher(None, a, b).ratio()
-
-
-def _build_keyword_group_map(
-    keywords: pd.Series,
-    similarity_threshold: float,
-) -> Dict[str, str]:
-    """
-    유사 키워드를 대표 키워드로 묶기 위한 매핑 생성.
-    대표 키워드는 우선 등장(빈도 높은) 키워드를 사용.
-    """
-    counts = keywords.astype(str).value_counts()
-    originals = counts.index.tolist()
-    normalized = {k: _normalize_keyword_for_grouping(k) for k in originals}
-
-    representatives: list[tuple[str, str]] = []  # (rep_keyword, rep_normalized)
-    group_map: Dict[str, str] = {}
-
-    for keyword in originals:
-        norm = normalized[keyword]
-        assigned = None
-        for rep_keyword, rep_norm in representatives:
-            if _keyword_similarity(norm, rep_norm) >= similarity_threshold:
-                assigned = rep_keyword
-                break
-        if assigned is None:
-            representatives.append((keyword, norm))
-            assigned = keyword
-        group_map[keyword] = assigned
-    return group_map
+from db import repository as repo
 
 
 def run_z_score_filtering(base_calculation_path: Path, weekly_keywords_bundle: Dict[str, Path]) -> Dict[str, Path]:
@@ -82,11 +33,12 @@ def run_z_score_filtering(base_calculation_path: Path, weekly_keywords_bundle: D
         short_window = int(config["window"]["short_term_weeks"])
         ma_span = int(config["z_score"]["moving_average_span"])
         high_threshold = float(config["z_score"].get("high_z_score_threshold", 2.0))
-        group_similarity_threshold = float(config["z_score"].get("group_similarity_threshold", 0.82))
 
         output_dir = ensure_output_dir()
+        # 입력: 3단계가 병행 출력한 wide base CSV(EWM은 dense 시계열 필요 → sparse DB long 불가)
         base_df = read_csv(base_calculation_path)
-        source_df = read_csv(weekly_keywords_bundle["csv"])
+        # sources: DB weekly_keywords 전체에서 (week,keyword)별 집계(증분 CSV는 부분이므로 DB 사용)
+        source_map = repo.read_weekly_sources()
         if base_df.empty:
             raise ValueError("입력 base_calculation.csv가 비어 있습니다.")
 
@@ -114,11 +66,6 @@ def run_z_score_filtering(base_calculation_path: Path, weekly_keywords_bundle: D
                 rows.append({"week": week, "keyword": keyword, "z_score": float(z)})
 
         z_df = pd.DataFrame(rows)
-        source_map = (
-            source_df.groupby(["week", "keyword"], as_index=False)["source"]
-            .agg(lambda x: "|".join(sorted(set(x.astype(str)))))
-            .rename(columns={"source": "sources"})
-        )
         merged = z_df.merge(source_map, on=["week", "keyword"], how="left")
         merged["sources"] = merged["sources"].fillna("unknown")
         merged = merged.sort_values(["week", "z_score"], ascending=[True, False])
@@ -143,6 +90,10 @@ def run_z_score_filtering(base_calculation_path: Path, weekly_keywords_bundle: D
         meta_path = written_path.with_suffix(".meta.json")
         if meta_path.exists():
             log_artifact(logger, "OUTPUT_JSON_META", meta_path)
+
+        # DB 적재(전체 재계산 → TRUNCATE 후 COPY). 고z는 뷰 v_z_score_high 로 제공.
+        n_db = repo.write_zscore(merged[["week", "keyword", "z_score", "sources"]])
+        logger.info("DB 적재 z_score_keywords | %d행", n_db)
 
         # 추가 산출물: z-score 임계치 이상 키워드만 별도 저장
         high_df = merged[merged["z_score"] >= high_threshold].copy()
@@ -173,58 +124,10 @@ def run_z_score_filtering(base_calculation_path: Path, weekly_keywords_bundle: D
         if high_meta_path.exists():
             log_artifact(logger, "OUTPUT_HIGH_JSON_META", high_meta_path)
 
-        # 추가 산출물: z_score >= threshold 데이터에서 유사 키워드 그룹 시계열 집계
-        if high_df.empty:
-            grouped_df = pd.DataFrame(columns=["week", "keyword", "z_score", "sources"])
-        else:
-            group_map = _build_keyword_group_map(
-                high_df["keyword"],
-                similarity_threshold=group_similarity_threshold,
-            )
-            grouped_df = high_df.copy()
-            grouped_df["keyword"] = grouped_df["keyword"].map(group_map).fillna(grouped_df["keyword"])
-            grouped_df = (
-                grouped_df.groupby(["keyword", "week"], as_index=False)
-                .agg(
-                    z_score=("z_score", "mean"),
-                    sources=("sources", lambda x: "|".join(sorted(set(x.astype(str))))),
-                )
-                .sort_values(["keyword", "week"], ascending=[True, True])
-                .reset_index(drop=True)
-            )
-            grouped_df = grouped_df[["week", "keyword", "z_score", "sources"]]
-
-        grouped_path = output_dir / "z_score_keywords_group.csv"
-        grouped_written_path = write_csv(grouped_df, grouped_path)
-        grouped_json_path = write_dataframe_json_export(
-            grouped_df,
-            grouped_written_path,
-            step="z_score_filtering_group",
-            extra_meta={
-                "source_file": str(high_written_path),
-                "high_z_score_threshold": high_threshold,
-                "group_similarity_threshold": group_similarity_threshold,
-            },
-        )
-        logger.info(
-            "z_score_group 요약 | threshold=%.1f | similarity=%.2f | 행수=%d | csv=%s | json=%s",
-            high_threshold,
-            group_similarity_threshold,
-            len(grouped_df),
-            grouped_written_path,
-            grouped_json_path,
-        )
-        log_artifact(logger, "OUTPUT_GROUP_CSV", grouped_written_path)
-        log_artifact(logger, "OUTPUT_GROUP_JSON", grouped_json_path)
-        grouped_meta_path = grouped_written_path.with_suffix(".meta.json")
-        if grouped_meta_path.exists():
-            log_artifact(logger, "OUTPUT_GROUP_JSON_META", grouped_meta_path)
-
+        # NOTE: P1에서 _group 산출물(z_score_keywords_group)은 폐기됨(소비처 없음).
         return {
             "csv": written_path,
             "json": json_path,
             "high_csv": high_written_path,
             "high_json": high_json_path,
-            "group_csv": grouped_written_path,
-            "group_json": grouped_json_path,
         }

@@ -19,3 +19,7 @@ google-generativeai
 umap-learn
 fastapi
 uvicorn
+# DB-ification (P0): PostgreSQL 접속/풀, 공유 .env 로딩
+psycopg[binary]
+psycopg_pool
+python-dotenv

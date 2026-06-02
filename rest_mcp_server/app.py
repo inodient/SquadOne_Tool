@@ -17,6 +17,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from db.config import load_shared_env
+
+# 프로젝트 루트 .env를 1회 로딩(멱등) — DB/LLM/임베딩/로깅 env를 일관 적용.
+load_shared_env()
+
 from steps.common import configure_logging, ensure_output_dir, get_logger
 
 _LOG = get_logger("rest_mcp_server")
@@ -166,10 +171,10 @@ def tool_frequency_matrix(body: PathInput, _: None = Depends(verify_api_key)) ->
         out = _step_fns()["run_frequency_matrix"](p)
         elapsed = time.perf_counter() - t0
         payload = {
-            "frequency_matrix_csv": str(out["csv"]),
-            "frequency_matrix_json": str(out["json"]),
+            "frequency_matrix_table": out["freq_table"],
+            "recomputed_weeks": out["recomputed_weeks"],
         }
-        _LOG.info("TOOL %s | OK | elapsed=%.2fs | out_csv=%s", name, elapsed, payload["frequency_matrix_csv"])
+        _LOG.info("TOOL %s | OK | elapsed=%.2fs | table=%s", name, elapsed, payload["frequency_matrix_table"])
         return _tool_result(name, True, payload)
     except Exception as exc:
         _LOG.exception("TOOL %s | FAIL | elapsed=%.2fs", name, time.perf_counter() - t0)
@@ -233,8 +238,6 @@ def tool_z_score(body: ZScoreBody, _: None = Depends(verify_api_key)) -> Dict[st
             "z_score_keywords_json": str(out["json"]),
             "z_score_keywords_high_csv": str(out["high_csv"]),
             "z_score_keywords_high_json": str(out["high_json"]),
-            "z_score_keywords_group_csv": str(out["group_csv"]),
-            "z_score_keywords_group_json": str(out["group_json"]),
         }
         _LOG.info(
             "TOOL %s | OK | elapsed=%.2fs | z_score_keywords_csv=%s",

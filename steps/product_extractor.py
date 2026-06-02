@@ -18,6 +18,8 @@ from steps.common import (
 )
 from steps.llm_factory import get_llm
 
+from db import repository as repo
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -270,6 +272,27 @@ def run_product_extractor(
         products_json = write_dataframe_json_export(product_df, products_csv, step="product_extractor_products")
         final_csv = write_csv(final_df, output_dir / "product_extractor_report.csv")
         final_json = write_dataframe_json_export(final_df, final_csv, step="product_extractor_report")
+
+        # ── DB 적재(주차 단위 replace) + 병행 CSV ──
+        proc_weeks = sorted(set(weeks))
+        n_prod = repo.write_product(product_df, proc_weeks) if not product_df.empty else 0
+        report_rows = []
+        for _, r in context_df.iterrows():
+            report_rows.append((
+                "product_context", str(r["week"]),
+                {"news_keyword": str(r.get("news_keyword", "")), "context_report": str(r.get("context_report", ""))},
+                None,
+            ))
+        for _, r in final_df.iterrows():
+            report_rows.append((
+                "product_report", str(r["week"]),
+                {"news_keyword": str(r.get("news_keyword", "")),
+                 "context_report": str(r.get("context_report", "")),
+                 "final_products": str(r.get("final_products", ""))},
+                None,
+            ))
+        n_rep = repo.write_reports(report_rows)
+        logger.info("DB 적재 | product_candidates=%d | reports=%d", n_prod, n_rep)
 
         for label, p in [
             ("OUTPUT_PRODUCT_CONTEXT_CSV", context_csv),
