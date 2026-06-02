@@ -930,24 +930,33 @@ def _query_qdrant_contexts(
 
 
 def run_trend_extractor(
-    z_score_csv: Path,
-    high_z_score_csv: Path,
-    weekly_keywords_csv: Path,
+    z_score_csv: Optional[Path] = None,
+    high_z_score_csv: Optional[Path] = None,
+    weekly_keywords_csv: Optional[Path] = None,
     *,
     base_start_week: str | None = None,
     base_end_week: str | None = None,
     test_week_offset: int = 0,
     test_max_weeks: Optional[int] = None,
     test_mode: bool = False,
+    z_score_df: Optional["pd.DataFrame"] = None,
+    weekly_df: Optional["pd.DataFrame"] = None,
 ) -> Dict[str, Path]:
+    """5+6단계: keysentence 통합 trend 추출.
+
+    입력 우선순위(파일 의존 제거용):
+      - z_score: z_score_df 인자 → 없으면 z_score_csv
+      - weekly counts: weekly_df 인자(week,keyword,count) → 없으면 weekly_keywords_csv
+    high_z_score 는 현재 미사용(읽기만, 향후 호환용).
+    """
     logger = get_logger("steps.trend_extractor")
     with log_step(
         logger,
         "5+6",
         "trend_extractor",
-        z_score_csv=str(z_score_csv.resolve()),
-        high_z_score_csv=str(high_z_score_csv.resolve()),
-        weekly_keywords_csv=str(weekly_keywords_csv.resolve()),
+        z_score_csv=str(z_score_csv.resolve()) if z_score_csv else None,
+        high_z_score_csv=str(high_z_score_csv.resolve()) if high_z_score_csv else None,
+        weekly_keywords_csv=str(weekly_keywords_csv.resolve()) if weekly_keywords_csv else None,
     ):
         cfg = load_config()
         tr_cfg = cfg.get("trend_extractor", {})
@@ -963,11 +972,20 @@ def run_trend_extractor(
         )
         anchor_top_n = int(tr_cfg.get("anchor_top_n", 5))
         persistence_min_count = int(tr_cfg.get("persistence_min_count", 3))
+        # (b)(c) 캐리오버: 전 주 선정 키워드를 무조건 다음 주로 이월하고 변화 수치를 기록.
+        #   carryover_unconditional=False 면 기존 동작(major & count>=persistence_min_count)으로 복귀.
+        #   carryover_sunset_fading_weeks: Fading 이 N주 연속이면 이월 종료(sunset). 0이면 무한 추적.
+        carryover_unconditional = bool(tr_cfg.get("carryover_unconditional", True))
+        carryover_sunset_fading_weeks = int(tr_cfg.get("carryover_sunset_fading_weeks", 2))
         vector_top_k = int(vector_cfg.get("top_k", tr_cfg.get("vector_top_k", 10)))
         date_field = str(vector_cfg.get("date_field", "date"))
         date_start_field = str(vector_cfg.get("date_start_field", "file_date_start"))
         date_end_field = str(vector_cfg.get("date_end_field", "file_date_end"))
-        qdrant_url = str(vector_cfg.get("qdrant_url", "http://localhost:6333"))
+        # Qdrant URL은 .env(QDRANT_HOST/PORT)를 단일 출처로 사용한다(db.config.qdrant_url).
+        # config의 qdrant_url 은 env 미설정 시의 폴백으로만 사용(원격 Tailscale 주소를 커밋하지 않기 위함).
+        from db.config import qdrant_url as _resolve_qdrant_url
+
+        qdrant_url = _resolve_qdrant_url() or str(vector_cfg.get("qdrant_url", "http://localhost:6333"))
         collection = str(vector_cfg.get("collection", "news_10y_ko_v1"))
         timeout_sec = float(vector_cfg.get("timeout_sec", 20))
         enable_query_embedding = bool(vector_cfg.get("enable_query_embedding", True))
@@ -1010,9 +1028,29 @@ def run_trend_extractor(
         w_ctx_mean = float(score_w.get("ctx_mean", 1.0))
         w_cohesion = float(score_w.get("cohesion", 1.0))
 
-        z_df = read_csv(z_score_csv)
-        high_df = read_csv(high_z_score_csv) if high_z_score_csv.exists() else pd.DataFrame()
-        wk_df = read_csv(weekly_keywords_csv)
+        # 입력 우선순위: in-memory frame → 제공된 CSV(존재 시) → DB 직접 읽기
+        if z_score_df is not None:
+            z_df = z_score_df.copy()
+        elif z_score_csv is not None and z_score_csv.exists():
+            z_df = read_csv(z_score_csv)
+        else:
+            # coverage 범위로 스코핑(아래에서 어차피 coverage로 clamp되므로 결과 동일, 단일 주차는 수 초).
+            z_df = repo.read_zscore(start_week=coverage_start, end_week=coverage_end)
+            logger.info(
+                "z_score 입력 | DB newstrend.z_score_keywords 직접 읽기 | range=%s~%s | rows=%d",
+                coverage_start, coverage_end, len(z_df),
+            )
+        high_df = read_csv(high_z_score_csv) if (high_z_score_csv is not None and high_z_score_csv.exists()) else pd.DataFrame()
+        if weekly_df is not None:
+            wk_df = weekly_df.copy()
+        elif weekly_keywords_csv is not None and weekly_keywords_csv.exists():
+            wk_df = read_csv(weekly_keywords_csv)
+        else:
+            wk_df = repo.read_weekly_freq(start_week=coverage_start, end_week=coverage_end)
+            logger.info(
+                "weekly counts 입력 | DB newstrend.weekly_keyword_freq 직접 읽기 | range=%s~%s | rows=%d",
+                coverage_start, coverage_end, len(wk_df),
+            )
         # P2: keysentence는 더 이상 외부 입력이 아니라 이 단계에서 2-phase 검색으로 생성한다.
         keysentence_max_titles = int(cfg.get("keysentence_extractor", {}).get("max_titles_for_prompt", 25))
         if z_df.empty or wk_df.empty:
@@ -1020,14 +1058,14 @@ def run_trend_extractor(
 
         z_df["week"] = z_df["week"].astype(str)
         z_df["keyword"] = z_df["keyword"].astype(str)
-        z_df["z_score"] = z_df["z_score"].apply(_safe_float)
+        # 벡터화(동작 보존): DB 직접 읽기 시 z_df/wk_df 가 전체 이력(수백만 행)이라
+        # .apply / iterrows 는 단일 주차 실행에도 수십 분이 걸린다. 동일 결과를 벡터 연산으로 산출.
+        z_df["z_score"] = pd.to_numeric(z_df["z_score"], errors="coerce").fillna(0.0)
         wk_counts = wk_df.groupby(["week", "keyword"], as_index=False)["count"].sum()
         wk_counts["week"] = wk_counts["week"].astype(str)
         wk_counts["keyword"] = wk_counts["keyword"].astype(str)
-        count_map = {
-            (str(r["week"]), str(r["keyword"])): _safe_int(r["count"])
-            for _, r in wk_counts.iterrows()
-        }
+        _counts = pd.to_numeric(wk_counts["count"], errors="coerce").fillna(0).astype(int).tolist()
+        count_map = dict(zip(zip(wk_counts["week"].tolist(), wk_counts["keyword"].tolist()), _counts))
 
         all_weeks = _sort_week_labels(sorted(z_df["week"].unique().tolist()))
         clamped_weeks = [w for w in all_weeks if _week_in_coverage(w, coverage_start, coverage_end)]
@@ -1050,6 +1088,8 @@ def run_trend_extractor(
         seen_history: dict[str, list[str]] = {}
         prev_status_map: dict[str, str] = {}
         prev_major_keywords: set[str] = set()
+        carryover_keywords: set[str] = set()   # (b) 다음 주로 무조건 이월할 전 주 선정 키워드
+        fading_streak: dict[str, int] = {}     # (c) 키워드별 연속 Fading 주차 수(sunset 판정)
         prev_week_summary: str = ""
 
         anchor_rows: list[dict[str, Any]] = []
@@ -1064,11 +1104,17 @@ def run_trend_extractor(
             week_z = z_df[z_df["week"] == week].sort_values("z_score", ascending=False)
             group_a = week_z.head(anchor_top_n)["keyword"].astype(str).tolist()
 
+            # Group B = 전 주에서 이월된 키워드.
+            #  (b) carryover_unconditional: 전 주 선정분을 count 조건 없이 무조건 이월(변화 추적용).
+            #      기존 동작은 'major & count>=persistence_min_count'.
             group_b: list[str] = []
-            for keyword in sorted(prev_major_keywords):
-                c = count_map.get((week, keyword), 0)
-                if c >= persistence_min_count:
-                    group_b.append(keyword)
+            if carryover_unconditional:
+                group_b = sorted(carryover_keywords)
+            else:
+                for keyword in sorted(prev_major_keywords):
+                    c = count_map.get((week, keyword), 0)
+                    if c >= persistence_min_count:
+                        group_b.append(keyword)
             selected_keywords = sorted(set(group_a).union(group_b))
             if not selected_keywords:
                 continue
@@ -1130,84 +1176,89 @@ def run_trend_extractor(
                     }
                 )
 
-                _kw_log = str(keyword).replace("\n", " ")[:100]
-                # 2-phase 검색(P2): ① 키워드로 거친 검색 → ② LLM 요약(query_text) → ③ 요약 시드로 정밀 검색
-                c0 = search_contexts(week, keyword, keyword, logger=logger, config=cfg, top_k=vector_top_k)
-                if c0:
-                    ks_articles = [
-                        {"title": d.get("title"), "body": d.get("summary_or_body"), "source": d.get("source")}
-                        for d in c0[: max(1, keysentence_max_titles)]
-                    ]
-                    key_sentence = (llm_weekly.invoke(_build_keyword_prompt(week, keyword, ks_articles)) or "").strip()
-                else:
-                    key_sentence = ""
-                query_for_search = key_sentence if key_sentence else keyword
-                logger.info(
-                    "TREND_EXTRACTOR_PHASE | step=qdrant_context | week_index=%d/%d | kw_index=%d/%d | week=%s | "
-                    "keyword=%s | z=%.3f | count=%d | query_chars=%d | query_from=%s",
-                    week_idx + 1, len(weeks), kw_idx, len(selected_keywords), week, _kw_log,
-                    z_score, count, len(str(query_for_search)), "keysentence" if key_sentence else "keyword",
-                )
-                contexts = search_contexts(week, keyword, query_for_search, logger=logger, config=cfg, top_k=vector_top_k)
-                logger.info(
-                    "TREND_EXTRACTOR_PHASE | step=qdrant_context_done | week=%s | keyword=%s | context_docs=%d",
-                    week,
-                    _kw_log,
-                    len(contexts),
-                )
-                doc_ids: list[str] = []
-                for ctx in contexts:
-                    doc_ids.append(str(ctx.get("doc_id", "")))
-                    context_rows.append({"week": week, "keyword": keyword, **ctx})
+                # (b) 비용 분리: 신규/활성(또는 이번 주 top-N anchor)만 Qdrant 검색 + LLM 요약을 돌린다.
+                #     이월된 비활성(Fading 등) 키워드는 수치(z/count/delta)만 anchor_rows에 기록되고
+                #     비싼 벡터검색/LLM은 건너뛴다(집합이 커져도 비용이 폭증하지 않도록).
+                needs_full = (keyword in group_a) or (status in {"Emerging", "Active"})
+                if needs_full:
+                    _kw_log = str(keyword).replace("\n", " ")[:100]
+                    # 2-phase 검색(P2): ① 키워드로 거친 검색 → ② LLM 요약(query_text) → ③ 요약 시드로 정밀 검색
+                    c0 = search_contexts(week, keyword, keyword, logger=logger, config=cfg, top_k=vector_top_k)
+                    if c0:
+                        ks_articles = [
+                            {"title": d.get("title"), "body": d.get("summary_or_body"), "source": d.get("source")}
+                            for d in c0[: max(1, keysentence_max_titles)]
+                        ]
+                        key_sentence = (llm_weekly.invoke(_build_keyword_prompt(week, keyword, ks_articles)) or "").strip()
+                    else:
+                        key_sentence = ""
+                    query_for_search = key_sentence if key_sentence else keyword
+                    logger.info(
+                        "TREND_EXTRACTOR_PHASE | step=qdrant_context | week_index=%d/%d | kw_index=%d/%d | week=%s | "
+                        "keyword=%s | z=%.3f | count=%d | query_chars=%d | query_from=%s",
+                        week_idx + 1, len(weeks), kw_idx, len(selected_keywords), week, _kw_log,
+                        z_score, count, len(str(query_for_search)), "keysentence" if key_sentence else "keyword",
+                    )
+                    contexts = search_contexts(week, keyword, query_for_search, logger=logger, config=cfg, top_k=vector_top_k)
+                    logger.info(
+                        "TREND_EXTRACTOR_PHASE | step=qdrant_context_done | week=%s | keyword=%s | context_docs=%d",
+                        week,
+                        _kw_log,
+                        len(contexts),
+                    )
+                    doc_ids: list[str] = []
+                    for ctx in contexts:
+                        doc_ids.append(str(ctx.get("doc_id", "")))
+                        context_rows.append({"week": week, "keyword": keyword, **ctx})
 
-                # keysentence 부산물 적립(evidence_doc_ids = news_id)
-                _uniq_docs = list(dict.fromkeys([d for d in doc_ids if d]))
-                keysentence_rows.append({
-                    "week": week,
-                    "keyword": keyword,
-                    "query_text": key_sentence,
-                    "key_sentence": key_sentence,
-                    "evidence_doc_ids": _uniq_docs,
-                    "evidence_count": len(contexts),
-                })
-
-                evidence_text = " ".join(str(c.get("summary_or_body", ""))[:220] for c in contexts[:3]).strip()
-                feature_text = str(query_for_search or evidence_text or keyword).strip()
-                ctx_scores = [float(c.get("score", 0.0) or 0.0) for c in contexts]
-                avg_ctx_score = float(sum(ctx_scores) / len(ctx_scores)) if ctx_scores else 0.0
-                feature_vec: list[float] = []
-                try:
-                    fv = embed_query_for_news(
-                        feature_text,
-                        vector_name="body",
-                        model_name=str(embed_model).strip() if embed_model else None,
-                        device=str(embed_device).strip() if embed_device else None,
-                        normalize=True,
-                    ).get("body")
-                    feature_vec = [float(x) for x in (fv or [])]
-                except Exception:
-                    feature_vec = []
-                keyword_features.append(
-                    {
+                    # keysentence 부산물 적립(evidence_doc_ids = news_id)
+                    _uniq_docs = list(dict.fromkeys([d for d in doc_ids if d]))
+                    keysentence_rows.append({
                         "week": week,
                         "keyword": keyword,
-                        "z_score": z_score,
-                        "count": count,
-                        "trend_slot_id": trend_slot_id,
-                        "status": status,
-                        "status_reason": reason,
-                        "action_taken": action,
-                        "is_major_trend": major,
-                        "prev_status": prev_status or "",
-                        "prev_count": prev_count,
-                        "count_change_ratio": (count / prev_count) if prev_count > 0 else (1.0 if count > 0 else 0.0),
-                        "evidence_text": evidence_text,
-                        "query_text": feature_text,
-                        "contexts": contexts,
-                        "feature_vec": feature_vec,
-                        "avg_ctx_score": avg_ctx_score,
-                    }
-                )
+                        "query_text": key_sentence,
+                        "key_sentence": key_sentence,
+                        "evidence_doc_ids": _uniq_docs,
+                        "evidence_count": len(contexts),
+                    })
+
+                    evidence_text = " ".join(str(c.get("summary_or_body", ""))[:220] for c in contexts[:3]).strip()
+                    feature_text = str(query_for_search or evidence_text or keyword).strip()
+                    ctx_scores = [float(c.get("score", 0.0) or 0.0) for c in contexts]
+                    avg_ctx_score = float(sum(ctx_scores) / len(ctx_scores)) if ctx_scores else 0.0
+                    feature_vec: list[float] = []
+                    try:
+                        fv = embed_query_for_news(
+                            feature_text,
+                            vector_name="body",
+                            model_name=str(embed_model).strip() if embed_model else None,
+                            device=str(embed_device).strip() if embed_device else None,
+                            normalize=True,
+                        ).get("body")
+                        feature_vec = [float(x) for x in (fv or [])]
+                    except Exception:
+                        feature_vec = []
+                    keyword_features.append(
+                        {
+                            "week": week,
+                            "keyword": keyword,
+                            "z_score": z_score,
+                            "count": count,
+                            "trend_slot_id": trend_slot_id,
+                            "status": status,
+                            "status_reason": reason,
+                            "action_taken": action,
+                            "is_major_trend": major,
+                            "prev_status": prev_status or "",
+                            "prev_count": prev_count,
+                            "count_change_ratio": (count / prev_count) if prev_count > 0 else (1.0 if count > 0 else 0.0),
+                            "evidence_text": evidence_text,
+                            "query_text": feature_text,
+                            "contexts": contexts,
+                            "feature_vec": feature_vec,
+                            "avg_ctx_score": avg_ctx_score,
+                        }
+                    )
 
                 seen_history.setdefault(keyword, []).append(week)
                 prev_status_map[keyword] = status
@@ -1429,6 +1480,10 @@ def run_trend_extractor(
                         "z_score": _safe_float(row["z_score"]),
                         "prev_z_score": prev_z,
                         "z_score_change": _safe_float(row["z_score"]) - prev_z,
+                        # (a) DB 영속화용 명시 컬럼: write_trend 이 그대로 적재한다.
+                        "delta_z": _safe_float(row["z_score"]) - prev_z,
+                        "delta_count": int(row["count"]) - int(row["prev_count"]),
+                        "count_ratio": _safe_float(row["count_change_ratio"]),
                         "weekly_summary": weekly_summary,
                         "transition_from_prev": "",
                         "trend_strength": _safe_float(row["z_score"]),
@@ -1450,6 +1505,24 @@ def run_trend_extractor(
             prev_week_summary = " ".join(week_group_summaries[:3]).strip()
             prev_group_items = current_group_items
             prev_major_keywords = {r["keyword"] for r in anchor_rows if r["week"] == week and r["is_major_trend"]}
+
+            # (c) 다음 주 이월 집합 갱신 + Fading 사멸(sunset).
+            #   이번 주 선정 키워드별 status로 연속 Fading 카운트를 갱신하고,
+            #   N주 연속 Fading 이면 이월 대상에서 제외(추적 종료). N=0이면 무한 추적.
+            week_status = {r["keyword"]: r["status"] for r in anchor_rows if r["week"] == week}
+            next_carryover: set[str] = set()
+            for kw, st in week_status.items():
+                if st == "Fading":
+                    fading_streak[kw] = fading_streak.get(kw, 0) + 1
+                else:
+                    fading_streak[kw] = 0
+                sunset = (
+                    carryover_sunset_fading_weeks > 0
+                    and fading_streak[kw] >= carryover_sunset_fading_weeks
+                )
+                if not sunset:
+                    next_carryover.add(kw)
+            carryover_keywords = next_carryover
 
         output_dir = ensure_output_dir()
         anchors_df = pd.DataFrame(anchor_rows)
@@ -1558,4 +1631,5 @@ def run_trend_extractor(
             "dashboard_json": dashboard_json,
             "keysentence_csv": keysentence_csv,
             "keysentence_json": keysentence_json,
+            "report_frame": report_df,   # 7단계 product in-memory 입력(transition_from_prev 등 전체 컬럼 보존)
         }

@@ -2,11 +2,11 @@
 
 단계 번호:
   1  keyword_extractor   (Qdrant→DB, --start-date/--end-date 또는 --week)
-  2  frequency_matrix    (증분 집계)
-  3  base_calculation    (전체 재계산)
-  4  z_score_filtering
-  56 trend_extractor     (5+6 통합, --base-start-week/--base-end-week 또는 --week)
-  7  product_extractor   (--news-keyword 선택)
+  2  frequency_matrix    (입력=DB weekly_keywords distinct week, 증분 집계)
+  3  base_calculation    (입력=DB weekly_keyword_freq, 전체 재계산, dense 적재)
+  4  z_score_filtering   (입력=DB base_calculation)
+  56 trend_extractor     (5+6 통합, 입력=DB z_score_keywords/weekly_keyword_freq, --base-start-week/--base-end-week 또는 --week)
+  7  product_extractor   (입력=DB trend_timeseries, --news-keyword 선택)
 
 사용 예:
   python -m scripts.run_step 1 --week 2023-W13
@@ -25,15 +25,12 @@ import argparse
 import json
 import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from db.config import load_shared_env
 
 load_shared_env()
 
 from steps.common import configure_logging, get_logger  # noqa: E402
-
-OUT = Path(__file__).resolve().parent.parent / "data" / "output"
 
 
 def _week_to_dates(week: str) -> tuple[str, str]:
@@ -74,30 +71,30 @@ def main() -> int:
         from steps.keyword_extractor import run_keyword_extractor
         out = run_keyword_extractor(start_date=args.start_date, end_date=args.end_date)
     elif step == "2":
+        # 처리 주차는 DB weekly_keywords 의 distinct week 에서 도출(CSV 의존 제거).
+        from db import repository as repo
         from steps.frequency_matrix import run_frequency_matrix
-        out = run_frequency_matrix(OUT / "weekly_keywords.csv")
+        out = run_frequency_matrix(weeks=repo.read_distinct_weeks())
     elif step == "3":
         from steps.base_calculation import run_base_calculation
         out = run_base_calculation()
     elif step == "4":
+        # 입력(base_calculation)은 DB 에서 직접 읽는다(파일 의존 없음).
         from steps.z_score_filtering import run_z_score_filtering
-        bundle = {"csv": OUT / "weekly_keywords.csv", "json": OUT / "weekly_keywords.json"}
-        out = run_z_score_filtering(OUT / "base_calculation.csv", bundle)
+        out = run_z_score_filtering()
     elif step in ("56", "5", "6"):
+        # 입력(z_score/weekly counts)은 DB에서 직접 읽는다(파일 의존 없음).
         from steps.trend_extractor import run_trend_extractor
         out = run_trend_extractor(
-            OUT / "z_score_keywords.csv",
-            OUT / "z_score_keywords_2.0.csv",
-            OUT / "weekly_keywords.csv",
             base_start_week=args.base_start_week,
             base_end_week=args.base_end_week,
             test_mode=args.test_mode,
             test_max_weeks=args.test_max_weeks,
         )
     elif step == "7":
+        # 입력(trend_timeseries)은 DB에서 직접 읽는다(파일 의존 없음).
         from steps.product_extractor import run_product_extractor
         out = run_product_extractor(
-            OUT / "trend_timeseries_report.csv",
             base_start_week=args.base_start_week,
             base_end_week=args.base_end_week,
             news_keyword=args.news_keyword,

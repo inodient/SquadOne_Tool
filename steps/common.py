@@ -18,6 +18,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.json"
 
 
+def _env_truthy(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    v = value.strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def files_output_enabled() -> bool:
+    """CSV/JSON 파일 산출 여부. env SQUADONE_WRITE_FILES 로 제어(기본 true).
+
+    DB가 권위 소스로 일원화되기 전까지 단계 간 전달이 여전히 파일 경로에 의존하므로
+    기본값은 true(병행 출력)다. 단계를 DB 입력으로 모두 전환한 뒤 false 로 끄면
+    `data/output` 디스크 폭증 없이 DB만 적재한다.
+    """
+    return _env_truthy(os.environ.get("SQUADONE_WRITE_FILES"), default=True)
+
+
 def configure_logging(
     level: str = "INFO",
     log_file: str | None = None,
@@ -110,6 +131,8 @@ def read_csv(path: Path) -> pd.DataFrame:
 
 
 def write_csv(df: pd.DataFrame, path: Path) -> Path:
+    if not files_output_enabled():
+        return path
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     os.close(fd)
@@ -127,6 +150,8 @@ def write_csv(df: pd.DataFrame, path: Path) -> Path:
 
 
 def write_json(payload: Any, path: Path, *, indent: int | None = 2) -> Path:
+    if not files_output_enabled():
+        return path
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
     os.close(fd)
@@ -158,6 +183,8 @@ def write_dataframe_json_export(
     - 행/열이 너무 크면 메타데이터 + 상위 N행 샘플만 저장(디스크 폭증 방지)
     """
     logger = get_logger("steps.export")
+    if not files_output_enabled():
+        return csv_path.with_suffix(".json")
     config = load_config()
     export_cfg = config.get(
         "export",

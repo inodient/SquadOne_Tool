@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/hooks.ts","./src/main.tsx","./src/vite-env.d.ts","./src/week.tsx","./src/api/client.ts","./src/api/types.ts","./src/components/generatebutton.tsx","./src/components/ui.tsx","./src/pages/detail.tsx","./src/pages/home.tsx","./src/pages/trendexplorer.tsx","./src/pages/weekcompare.tsx"],"version":"5.9.3"}

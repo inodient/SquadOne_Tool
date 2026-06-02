@@ -107,24 +107,26 @@ def run_base_calculation(frequency_matrix_path: Optional[Path] = None) -> Dict[s
                         "long_term_weeks": long_term_weeks, "num_weeks": num_docs},
         )
 
-        # ── DB long 적재 (tfidf != 0 희소화, numpy 벡터화) ──
+        # ── DB long 적재 (dense, numpy 벡터화) ──
+        # 4단계 EWM 은 dense 시계열을 필요로 한다: tfidf=0 주차라도 rolling mean/std 는
+        # 유의미하므로 모든 (필터 통과 키워드 × 전체 주차) 셀을 저장한다(희소화 금지).
         weeks_arr = np.asarray(week_cols, dtype=object)
         kw_arr = filtered_df["keyword"].to_numpy()
         tf_vals = tfidf_df.to_numpy()
         mn_vals = long_mean.to_numpy()
         sd_vals = long_std.to_numpy()
-        mask = tf_vals != 0
-        ri, ci = np.where(mask)
+        n_kw, n_wk = tf_vals.shape
+        ri, ci = np.divmod(np.arange(n_kw * n_wk), n_wk)
         long_out = pd.DataFrame({
             "week": weeks_arr[ci],
             "keyword": kw_arr[ri],
-            "tfidf": tf_vals[mask],
-            "base_mean": mn_vals[mask],
-            "base_std": sd_vals[mask],
+            "tfidf": tf_vals.ravel(),
+            "base_mean": mn_vals.ravel(),
+            "base_std": sd_vals.ravel(),
         })
         n_db = repo.write_base(long_out)
         logger.info(
-            "base_calculation 적재 | wide행=%d | long(DB)행=%d | csv=%s",
+            "base_calculation 적재(dense) | wide행=%d | long(DB)행=%d | csv=%s",
             len(out_df), n_db, written_path,
         )
         log_artifact(logger, "OUTPUT_CSV", written_path)
@@ -132,4 +134,6 @@ def run_base_calculation(frequency_matrix_path: Optional[Path] = None) -> Dict[s
         meta_path = written_path.with_suffix(".meta.json")
         if meta_path.exists():
             log_artifact(logger, "OUTPUT_JSON_META", meta_path)
-        return {"csv": written_path, "json": json_path, "db_rows": n_db}
+        # frame: dense wide(키워드×주차 tfidf/mean/std). DB base_calculation 이 dense 로
+        # 적재되므로 4단계는 DB 에서 직접 읽는다. frame 은 호환용으로만 반환한다.
+        return {"csv": written_path, "json": json_path, "db_rows": n_db, "frame": out_df}

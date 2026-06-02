@@ -327,7 +327,8 @@ def _finalize_weekly(
     log_artifact(logger, "OUTPUT_JSON", json_path)
     if meta_path.exists():
         log_artifact(logger, "OUTPUT_JSON_META", meta_path)
-    return {"csv": written_path, "json": json_path}
+    weeks = sorted(result["week"].astype(str).unique().tolist())
+    return {"csv": written_path, "json": json_path, "weeks": weeks}
 
 
 def run_keyword_extractor(

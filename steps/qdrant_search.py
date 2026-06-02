@@ -43,7 +43,9 @@ def search_contexts(
     from db.config import qdrant_url as _qurl
 
     vcfg = config.get("vector_db", {})
-    q_url = str(vcfg.get("qdrant_url") or _qurl())
+    # .env(QDRANT_HOST/PORT)를 단일 출처로 사용. config의 qdrant_url(=localhost)은 env 미설정 시 폴백만.
+    # (config가 truthy면 무조건 우선하던 기존 코드는 원격 .env를 무시해 localhost 접속→Connection refused 였음.)
+    q_url = _qurl() or str(vcfg.get("qdrant_url", "http://localhost:6333"))
     collection = str(vcfg.get("collection", "news_10y_ko_v1"))
     tk = int(top_k if top_k is not None else vcfg.get("top_k", 10))
     seed = (seed_text or keyword or "").strip()

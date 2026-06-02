@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # Ensure repo root is on path (uvicorn may cwd elsewhere)
@@ -59,6 +60,26 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="NewsTrend REST Tools", version="1.0.0", lifespan=lifespan)
+
+# 대시보드 프론트(React dev 서버) 호출 허용. env DASHBOARD_ORIGINS(콤마구분)로 재정의 가능.
+_dashboard_origins = [
+    o.strip()
+    for o in os.environ.get(
+        "DASHBOARD_ORIGINS", "http://localhost:5180,http://127.0.0.1:5180"
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_dashboard_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# 대시보드 조회 전용 라우터(/v1/view/*) — 읽기 전용.
+from rest_mcp_server.views import router as views_router  # noqa: E402
+
+app.include_router(views_router)
 
 
 def _tool_result(tool_name: str, ok: bool, payload: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> Dict[str, Any]:
@@ -266,20 +287,22 @@ def tool_trend_extractor(body: TrendExtractorBody, _: None = Depends(verify_api_
     )
     t0 = time.perf_counter()
     try:
-        out_dir = ensure_output_dir()
-        z_score_p = Path(body.z_score_csv) if body.z_score_csv else out_dir / "z_score_keywords.csv"
-        high_p = Path(body.high_z_score_csv) if body.high_z_score_csv else out_dir / "z_score_keywords_2.0.csv"
-        weekly_p = Path(body.weekly_keywords_csv) if body.weekly_keywords_csv else out_dir / "weekly_keywords.csv"
-        if not z_score_p.is_absolute():
-            z_score_p = _ROOT / z_score_p
-        if not high_p.is_absolute():
-            high_p = _ROOT / high_p
-        if not weekly_p.is_absolute():
-            weekly_p = _ROOT / weekly_p
-        for p in [z_score_p, high_p, weekly_p]:
+        # CSV 경로가 명시되면 해당 파일을 검증 후 사용, 미지정이면 None → 단계가 DB에서 직접 읽음.
+        def _resolve_opt(opt: Optional[str]) -> Optional[Path]:
+            if not opt:
+                return None
+            p = Path(opt)
+            if not p.is_absolute():
+                p = _ROOT / p
             if not p.exists():
-                _LOG.warning("TOOL %s | FAIL | file not found | path=%s", name, p)
-                return _tool_result(name, False, {}, f"File not found: {p}")
+                raise FileNotFoundError(f"File not found: {p}")
+            return p
+
+        z_score_p = _resolve_opt(body.z_score_csv)
+        high_p = _resolve_opt(body.high_z_score_csv)
+        weekly_p = _resolve_opt(body.weekly_keywords_csv)
+        if z_score_p is None and weekly_p is None:
+            _LOG.info("TOOL %s | 입력 미지정 → DB 직접 읽기 모드", name)
 
         out = _step_fns()["run_trend_extractor"](
             z_score_p,
@@ -333,13 +356,17 @@ def tool_product_extractor(body: ProductExtractorBody, _: None = Depends(verify_
     )
     t0 = time.perf_counter()
     try:
-        out_dir = ensure_output_dir()
-        trend_p = Path(body.trend_timeseries_csv) if body.trend_timeseries_csv else out_dir / "trend_timeseries_report.csv"
-        if not trend_p.is_absolute():
-            trend_p = _ROOT / trend_p
-        if not trend_p.exists():
-            _LOG.warning("TOOL %s | FAIL | file not found | path=%s", name, trend_p)
-            return _tool_result(name, False, {}, f"File not found: {trend_p}")
+        # CSV 경로가 명시되면 검증 후 사용, 미지정이면 None → 단계가 DB(trend_timeseries)에서 직접 읽음.
+        trend_p: Optional[Path] = None
+        if body.trend_timeseries_csv:
+            trend_p = Path(body.trend_timeseries_csv)
+            if not trend_p.is_absolute():
+                trend_p = _ROOT / trend_p
+            if not trend_p.exists():
+                _LOG.warning("TOOL %s | FAIL | file not found | path=%s", name, trend_p)
+                return _tool_result(name, False, {}, f"File not found: {trend_p}")
+        else:
+            _LOG.info("TOOL %s | 입력 미지정 → DB 직접 읽기 모드", name)
 
         out = _step_fns()["run_product_extractor"](
             trend_p,

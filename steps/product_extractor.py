@@ -142,7 +142,7 @@ def _extract_products(text: str, max_products: int) -> list[tuple[str, str]]:
 
 
 def run_product_extractor(
-    trend_timeseries_csv: Path,
+    trend_timeseries_csv: Optional[Path] = None,
     *,
     test_week_offset: int = 0,
     test_max_weeks: Optional[int] = None,
@@ -152,13 +152,23 @@ def run_product_extractor(
     context_report_input: Optional[str] = None,
     base_start_week: str | None = None,
     base_end_week: str | None = None,
+    report_df: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Path | str]:
+    """7단계: 상품군 추출.
+
+    trend 입력 우선순위:
+      1) report_df 인자(5+6단계 in-memory 프레임) — 파일 의존 없음
+      2) trend_timeseries_csv(단독 실행/REST 호환)
+    """
     logger = get_logger("steps.product_extractor")
+    trend_src = "report_df(in-memory)" if report_df is not None else (
+        str(trend_timeseries_csv.resolve()) if trend_timeseries_csv else "<none>"
+    )
     with log_step(
         logger,
         6,
         "product_extractor",
-        trend_timeseries_csv=str(trend_timeseries_csv.resolve()),
+        trend_input=trend_src,
         mode=mode,
         test_mode=test_mode,
         test_week_offset=test_week_offset,
@@ -183,9 +193,15 @@ def run_product_extractor(
             )
         )
 
-        report_df = read_csv(trend_timeseries_csv)
+        # 입력 우선순위: in-memory frame → 제공된 CSV(존재 시) → DB 직접 읽기
+        if report_df is None:
+            if trend_timeseries_csv is not None and trend_timeseries_csv.exists():
+                report_df = read_csv(trend_timeseries_csv)
+            else:
+                report_df = repo.read_trend_timeseries()
+                logger.info("trend 입력 | DB newstrend.trend_timeseries 직접 읽기 | rows=%d", len(report_df))
         if report_df.empty:
-            raise ValueError("trend_timeseries_report.csv가 비어 있습니다.")
+            raise ValueError("trend_timeseries 입력이 비어 있습니다.")
         scoped = _collect_scope_rows(
             report_df,
             news_keyword=news_keyword,
