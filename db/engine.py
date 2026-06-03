@@ -26,6 +26,9 @@ def get_pool(min_size: int = 1, max_size: int = 5) -> ConnectionPool:
             min_size=min_size,
             max_size=max_size,
             kwargs={"options": kwargs["options"]},
+            # 체크아웃 시 죽은 커넥션을 검증·교체(SELECT 1). 장시간 유휴 후에도 살아있는 커넥션 보장.
+            check=ConnectionPool.check_connection,
+            max_idle=300.0,
             open=True,
         )
     return _pool

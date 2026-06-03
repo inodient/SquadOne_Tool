@@ -44,7 +44,10 @@ def pg_dsn() -> str:
     host = os.environ.get("POSTGRES_HOST", "localhost")
     port = os.environ.get("POSTGRES_PORT", "5432")
     db = os.environ["POSTGRES_DB"]
-    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    # TCP keepalive: trend 단계처럼 수십 분간 DB 쓰기가 없을 때 원격/Tailscale 이
+    # 유휴 커넥션을 끊어 'server closed the connection unexpectedly' 가 나는 것을 방지.
+    ka = "keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=5"
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}?{ka}"
 
 
 def pg_connect_kwargs() -> dict:
