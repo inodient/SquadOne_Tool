@@ -207,6 +207,73 @@ def write_zscore(df: pd.DataFrame, *, truncate: bool = True) -> int:
     return n
 
 
+# ── 키워드 노이즈 분류(keyword_class) ───────────────────────────
+
+def read_zscore_spikes(threshold: float = 2.0) -> pd.DataFrame:
+    """z_score_keywords 에서 z>=threshold 스파이크만 (keyword, week)로 반환.
+
+    계절성 분류기 입력용. 전체 z_score(수백만 행)를 끌어오지 않고 고z만 가져온다.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT keyword, week FROM newstrend.z_score_keywords WHERE z_score >= %s",
+                (float(threshold),),
+            )
+            data = cur.fetchall()
+    return pd.DataFrame(data, columns=["keyword", "week"])
+
+
+def write_keyword_class(df: pd.DataFrame, *, klass: str, method: str) -> int:
+    """keyword_class 적재(class+method 단위 replace).
+
+    df 컬럼: keyword, score, detail(dict). 동일 (class, method) 산출을 전량 교체하므로
+    분류기 재실행이 멱등하다. detail 은 jsonb 로 저장.
+    """
+    from psycopg.types.json import Json
+
+    sub = df[["keyword", "score", "detail"]]
+    n = 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM newstrend.keyword_class WHERE class = %s AND method = %s",
+                (str(klass), str(method)),
+            )
+            sql = (
+                "INSERT INTO newstrend.keyword_class (keyword, class, score, method, detail) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (keyword, class) DO UPDATE SET "
+                "score = EXCLUDED.score, method = EXCLUDED.method, "
+                "detail = EXCLUDED.detail, updated_at = now()"
+            )
+            for keyword, score, detail in sub.itertuples(index=False, name=None):
+                cur.execute(sql, (
+                    str(keyword), str(klass),
+                    None if (score is None or (isinstance(score, float) and pd.isna(score))) else float(score),
+                    str(method),
+                    Json(detail) if isinstance(detail, dict) else None,
+                ))
+                n += 1
+        conn.commit()
+    return n
+
+
+def read_keyword_class(klass: str | None = None) -> pd.DataFrame:
+    """keyword_class 를 DataFrame(keyword, class, score, method, detail)로 반환."""
+    where, params = ("", ())
+    if klass is not None:
+        where, params = (" WHERE class = %s", (str(klass),))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT keyword, class, score, method, detail FROM newstrend.keyword_class" + where,
+                params,
+            )
+            data = cur.fetchall()
+    return pd.DataFrame(data, columns=["keyword", "class", "score", "method", "detail"])
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:
@@ -274,8 +341,8 @@ def write_trend(
     ts_sql = (
         "INSERT INTO newstrend.trend_timeseries "
         "(week, keyword, trend_slot_id, group_id, group_score, status, status_reason, "
-        " z_score, count, weekly_summary, evidence_doc_ids, delta_z, delta_count, count_ratio) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        " z_score, count, weekly_summary, evidence_doc_ids, delta_z, delta_count, count_ratio, noise_classes) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
     )
     cx_sql = (
         "INSERT INTO newstrend.trend_contexts (week, keyword, doc_id, score, snippet) "
@@ -295,18 +362,20 @@ def write_trend(
     def _i(v):
         return 0 if (v is None or (isinstance(v, float) and pd.isna(v))) else int(v)
 
-    # delta_* 컬럼은 trend_extractor report_df에 있으면 사용, 없으면(구 호출) 0으로 채움.
+    # delta_*/noise_classes 컬럼은 trend_extractor report_df에 있으면 사용, 없으면(구 호출) 기본값.
     _ts_df = timeseries_df.copy()
     for _c in ("delta_z", "delta_count", "count_ratio"):
         if _c not in _ts_df.columns:
             _ts_df[_c] = 0
+    if "noise_classes" not in _ts_df.columns:
+        _ts_df["noise_classes"] = [[] for _ in range(len(_ts_df))]
     ts_cols = ["week", "keyword", "trend_slot_id", "group_id", "group_score", "status",
                "status_reason", "z_score", "count", "weekly_summary", "evidence_doc_ids",
-               "delta_z", "delta_count", "count_ratio"]
+               "delta_z", "delta_count", "count_ratio", "noise_classes"]
     ts_rows = [
         (str(w), str(kw), _s(slot), _s(gid), _f(gs), _s(st), _s(sr), _f(z), _i(cnt), _s(ws), _as_list(ev),
-         _f(dz), _i(dc), _f(cr))
-        for w, kw, slot, gid, gs, st, sr, z, cnt, ws, ev, dz, dc, cr
+         _f(dz), _i(dc), _f(cr), _as_list(nc))
+        for w, kw, slot, gid, gs, st, sr, z, cnt, ws, ev, dz, dc, cr, nc
         in _ts_df[ts_cols].itertuples(index=False, name=None)
     ]
     cx_cols = ["week", "keyword", "doc_id", "score", "snippet"]
@@ -454,7 +523,7 @@ def read_trends(week: str, status: str | None = None) -> List[Dict[str, Any]]:
     sql = (
         "SELECT week, keyword, trend_slot_id, group_id, group_score, status, "
         "status_reason, z_score, count, weekly_summary, evidence_doc_ids, "
-        "delta_z, delta_count, count_ratio "
+        "delta_z, delta_count, count_ratio, noise_classes "
         "FROM newstrend.trend_timeseries WHERE week = %s"
     )
     params: list[Any] = [week]
@@ -465,6 +534,23 @@ def read_trends(week: str, status: str | None = None) -> List[Dict[str, Any]]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, tuple(params))
+            return _rows_to_dicts(cur)
+
+
+def read_trend_excluded(week: str) -> List[Dict[str, Any]]:
+    """해당 주차 review 버킷: 고z(≥2.0)지만 노이즈 라벨로 anchor에서 제외된 후보(z 내림차순).
+
+    v_trend_review_excluded(= v_z_score_high ⋈ keyword_class) 조회. 상품성 계절어(패딩 등)를
+    여기서 사람이 회수할 수 있다. 5단계 제외 정책과 무관하게 항상 '제외 가능' 목록을 제공.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, keyword, z_score, noise_classes "
+                "FROM newstrend.v_trend_review_excluded WHERE week = %s "
+                "ORDER BY z_score DESC NULLS LAST",
+                (week,),
+            )
             return _rows_to_dicts(cur)
 
 
@@ -557,5 +643,102 @@ def read_source_distribution(week: str, keyword: str) -> List[Dict[str, Any]]:
                 "SELECT source, sum(count)::int AS count FROM newstrend.weekly_keywords "
                 "WHERE week = %s AND keyword = %s GROUP BY source ORDER BY count DESC",
                 (week, keyword),
+            )
+            return _rows_to_dicts(cur)
+
+
+# ── 기간(범위) 추적 조회 (5~7단계 변화 추적 화면) ──────────────────
+# PeriodTracker 화면(/v1/view/range/*)이 소비. start_week~end_week 범위를 한 번에 읽어
+# 주차축 차트를 그린다. ISO 주차는 사전식=시간순이라 BETWEEN으로 안전하게 필터.
+
+def read_lifecycle_range(start_week: str, end_week: str) -> List[Dict[str, Any]]:
+    """[6단계] 기간 내 주차별 status 카운트. Stacked Area(생명주기 추이)용.
+
+    반환: [{week, status, count}, ...] (week 오름차순). 프론트가 주차×status 로 피벗.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, status, count(*)::int AS count "
+                "FROM newstrend.trend_timeseries "
+                "WHERE week BETWEEN %s AND %s "
+                "GROUP BY week, status ORDER BY week",
+                (start_week, end_week),
+            )
+            return _rows_to_dicts(cur)
+
+
+def read_top_keywords_range(start_week: str, end_week: str, *, limit: int = 8) -> List[str]:
+    """[6단계] 기간 내 트렌드 비중 상위 키워드. z-score 멀티라인의 계열 선정용.
+
+    기간 내 max(group_score) → max(z_score) 순으로 정렬해 상위 limit개 키워드.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT keyword, max(group_score) AS gs, max(z_score) AS z "
+                "FROM newstrend.trend_timeseries "
+                "WHERE week BETWEEN %s AND %s "
+                "GROUP BY keyword "
+                "ORDER BY gs DESC NULLS LAST, z DESC NULLS LAST "
+                "LIMIT %s",
+                (start_week, end_week, limit),
+            )
+            return [str(r[0]) for r in cur.fetchall()]
+
+
+def read_zscore_matrix_range(
+    start_week: str, end_week: str, keywords: Sequence[str]
+) -> List[Dict[str, Any]]:
+    """[6단계] 주어진 키워드들의 기간 내 주차별 z-score. 멀티라인 차트용.
+
+    반환: [{week, keyword, z_score}, ...] (week 오름차순).
+    z_score_keywords(전체 537주 적재)에서 읽어 추이가 끊기지 않는다.
+    """
+    keywords = list(dict.fromkeys(keywords))
+    if not keywords:
+        return []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, keyword, z_score FROM newstrend.z_score_keywords "
+                "WHERE week BETWEEN %s AND %s AND keyword = ANY(%s) "
+                "ORDER BY week",
+                (start_week, end_week, keywords),
+            )
+            return _rows_to_dicts(cur)
+
+
+def read_products_range(start_week: str, end_week: str) -> List[Dict[str, Any]]:
+    """[7단계] 기간 내 주차별 상품 추천(rank 포함). heatmap + 인접주 diff 양쪽 입력.
+
+    반환: [{week, rank, product_name, selection_reason}, ...] (week, rank 정렬).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, rank, product_name, selection_reason "
+                "FROM newstrend.product_candidates "
+                "WHERE week BETWEEN %s AND %s "
+                "ORDER BY week, rank",
+                (start_week, end_week),
+            )
+            return _rows_to_dicts(cur)
+
+
+def read_keysentence_range(start_week: str, end_week: str) -> List[Dict[str, Any]]:
+    """[5단계] 기간 내 주차별 핵심문장 수·근거 수. 근거 추이 라인용.
+
+    반환: [{week, keysentence_count, evidence_total}, ...] (week 오름차순).
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, count(*)::int AS keysentence_count, "
+                "coalesce(sum(evidence_count), 0)::int AS evidence_total "
+                "FROM newstrend.keysentence "
+                "WHERE week BETWEEN %s AND %s "
+                "GROUP BY week ORDER BY week",
+                (start_week, end_week),
             )
             return _rows_to_dicts(cur)

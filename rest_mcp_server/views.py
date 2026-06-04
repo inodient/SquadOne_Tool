@@ -87,6 +87,13 @@ def get_trends(
     return {"week": wk, "trends": repo.read_trends(wk, status)}
 
 
+@router.get("/trends/excluded")
+def get_trends_excluded(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+    """review 버킷: 고z(≥2.0)지만 노이즈 라벨로 anchor에서 제외된 후보(상품성 계절어 회수용)."""
+    wk = _resolve_week(week)
+    return {"week": wk, "excluded": repo.read_trend_excluded(wk)}
+
+
 @router.get("/groups")
 def get_groups(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
     """시맨틱 그룹(버블/트리맵용)."""
@@ -122,6 +129,69 @@ def get_sources(
     """해당 (week, keyword)의 언론사 분포(도넛)."""
     wk = _resolve_week(week)
     return {"week": wk, "keyword": keyword, "sources": repo.read_source_distribution(wk, keyword)}
+
+
+# ── 기간(범위) 추적 조회 (PeriodTracker 화면) ────────────────────
+# start~end 주차를 한 번에 읽어 5~7단계 변화를 차트로 보여준다(읽기 전용).
+# from/to 는 필수(단일 주차 폴백 없음). ISO 주차 'YYYY-Www' 형식.
+
+
+def _validate_range(week_from: str, week_to: str) -> tuple[str, str]:
+    """from/to 정규화·검증. from<=to 보장(뒤집혀 오면 스왑). 빈 값은 400."""
+    f = (week_from or "").strip()
+    t = (week_to or "").strip()
+    if not f or not t:
+        raise HTTPException(status_code=400, detail="from, to 주차가 모두 필요합니다.")
+    if f > t:  # ISO 주차는 사전식=시간순
+        f, t = t, f
+    return f, t
+
+
+@router.get("/range/lifecycle")
+def get_range_lifecycle(
+    week_from: str = Query(..., alias="from"),
+    week_to: str = Query(..., alias="to"),
+) -> Dict[str, Any]:
+    """[6단계] 기간 내 주차별 status 카운트(생명주기 추이 Stacked Area)."""
+    f, t = _validate_range(week_from, week_to)
+    return {"from": f, "to": t, "rows": repo.read_lifecycle_range(f, t)}
+
+
+@router.get("/range/zscore")
+def get_range_zscore(
+    week_from: str = Query(..., alias="from"),
+    week_to: str = Query(..., alias="to"),
+    top: int = Query(default=8, ge=1, le=20),
+) -> Dict[str, Any]:
+    """[6단계] 기간 내 상위 트렌드 키워드의 주차별 z-score(멀티라인)."""
+    f, t = _validate_range(week_from, week_to)
+    keywords = repo.read_top_keywords_range(f, t, limit=top)
+    return {
+        "from": f,
+        "to": t,
+        "keywords": keywords,
+        "rows": repo.read_zscore_matrix_range(f, t, keywords),
+    }
+
+
+@router.get("/range/products")
+def get_range_products(
+    week_from: str = Query(..., alias="from"),
+    week_to: str = Query(..., alias="to"),
+) -> Dict[str, Any]:
+    """[7단계] 기간 내 주차별 상품 추천(heatmap + 인접주 신규/유지/탈락 diff)."""
+    f, t = _validate_range(week_from, week_to)
+    return {"from": f, "to": t, "rows": repo.read_products_range(f, t)}
+
+
+@router.get("/range/keysentence")
+def get_range_keysentence(
+    week_from: str = Query(..., alias="from"),
+    week_to: str = Query(..., alias="to"),
+) -> Dict[str, Any]:
+    """[5단계] 기간 내 주차별 핵심문장 수·근거 수(근거 추이 라인)."""
+    f, t = _validate_range(week_from, week_to)
+    return {"from": f, "to": t, "rows": repo.read_keysentence_range(f, t)}
 
 
 # ── 트렌드·상품 생성(5~7단계) 온디맨드 실행 ──────────────────────

@@ -972,6 +972,9 @@ def run_trend_extractor(
         )
         anchor_top_n = int(tr_cfg.get("anchor_top_n", 5))
         persistence_min_count = int(tr_cfg.get("persistence_min_count", 3))
+        # 노이즈 라벨(keyword_class) 소비: 라벨된 키워드를 anchor 선정에서 제외(삭제 아님 — review 버킷 보존).
+        exclude_noise = bool(tr_cfg.get("exclude_noise_classes", True))
+        exclude_classes = list(tr_cfg.get("exclude_classes", ["seasonal", "politics"]))
         # (b)(c) 캐리오버: 전 주 선정 키워드를 무조건 다음 주로 이월하고 변화 수치를 기록.
         #   carryover_unconditional=False 면 기존 동작(major & count>=persistence_min_count)으로 복귀.
         #   carryover_sunset_fading_weeks: Fading 이 N주 연속이면 이월 종료(sunset). 0이면 무한 추적.
@@ -1082,6 +1085,24 @@ def run_trend_extractor(
             raise ValueError("test_week_offset/test_max_weeks 조합으로 실행 주차가 비었습니다.")
         logger.info("trend_extractor 실행 주차 수=%d | first=%s | last=%s", len(weeks), weeks[0], weeks[-1])
 
+        # 노이즈 라벨 로드: 키워드별 라벨(플래그) + anchor 제외 집합. 정책=라벨된 건 anchor에서 빼되 삭제 안 함.
+        kw2classes: dict[str, list[str]] = {}
+        exclude_kw: set[str] = set()
+        try:
+            kc_df = repo.read_keyword_class()
+            for _kw, _cls in zip(kc_df["keyword"].astype(str), kc_df["class"].astype(str)):
+                lst = kw2classes.setdefault(_kw, [])
+                if _cls not in lst:
+                    lst.append(_cls)
+            if exclude_noise:
+                exclude_kw = {k for k, cl in kw2classes.items() if any(c in exclude_classes for c in cl)}
+            logger.info(
+                "노이즈 라벨 로드 | 라벨키워드=%d | anchor제외=%d | 제외class=%s",
+                len(kw2classes), len(exclude_kw), exclude_classes if exclude_noise else "OFF(토글)",
+            )
+        except Exception as exc:
+            logger.warning("keyword_class 로드 실패(제외 없이 진행): %s", exc)
+
         llm_weekly = get_llm("individual_summary")
         llm_seq = get_llm("sequential_analysis")
 
@@ -1102,7 +1123,10 @@ def run_trend_extractor(
 
         for week_idx, week in enumerate(weeks):
             week_z = z_df[z_df["week"] == week].sort_values("z_score", ascending=False)
-            group_a = week_z.head(anchor_top_n)["keyword"].astype(str).tolist()
+            # 노이즈 라벨 키워드는 anchor 후보에서 제외 → 진짜 트렌드가 top-N을 채움(week_z 자체는
+            # 이후 키워드별 z 조회에 그대로 쓰므로 anchor용으로만 필터링).
+            week_z_anchor = week_z[~week_z["keyword"].astype(str).isin(exclude_kw)] if exclude_kw else week_z
+            group_a = week_z_anchor.head(anchor_top_n)["keyword"].astype(str).tolist()
 
             # Group B = 전 주에서 이월된 키워드.
             #  (b) carryover_unconditional: 전 주 선정분을 count 조건 없이 무조건 이월(변화 추적용).
@@ -1115,6 +1139,8 @@ def run_trend_extractor(
                     c = count_map.get((week, keyword), 0)
                     if c >= persistence_min_count:
                         group_b.append(keyword)
+            if exclude_kw:
+                group_b = [k for k in group_b if k not in exclude_kw]
             selected_keywords = sorted(set(group_a).union(group_b))
             if not selected_keywords:
                 continue
@@ -1489,6 +1515,8 @@ def run_trend_extractor(
                         "trend_strength": _safe_float(row["z_score"]),
                         "evidence_doc_ids": "|".join(str(x) for x in evidence if x),
                         "final_archive_flag": bool(row["final_archive_flag"]),
+                        # 노이즈 라벨 플래그(제외 토글 off/부분 제외 시 의미). write_trend 가 noise_classes 로 적재.
+                        "noise_classes": kw2classes.get(keyword, []),
                     }
                 )
 

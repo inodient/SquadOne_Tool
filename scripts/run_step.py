@@ -5,6 +5,7 @@
   2  frequency_matrix    (입력=DB weekly_keywords distinct week, 증분 집계)
   3  base_calculation    (입력=DB weekly_keyword_freq, 전체 재계산, dense 적재)
   4  z_score_filtering   (입력=DB base_calculation)
+  cls keyword_classifier (입력=DB z_score_keywords, 1차: seasonal 라벨링, 제거 아님)
   56 trend_extractor     (5+6 통합, 입력=DB z_score_keywords/weekly_keyword_freq, --base-start-week/--base-end-week 또는 --week)
   7  product_extractor   (입력=DB trend_timeseries, --news-keyword 선택)
 
@@ -43,13 +44,15 @@ def _week_to_dates(week: str) -> tuple[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="뉴스 트렌드 단계별 실행")
-    ap.add_argument("step", choices=["1", "2", "3", "4", "56", "5", "6", "7"], help="단계 번호(5+6은 56)")
+    ap.add_argument("step", choices=["1", "2", "3", "4", "cls", "56", "5", "6", "7"], help="단계 번호(5+6은 56, cls=키워드 노이즈 분류)")
     ap.add_argument("--week", default=None, help="편의: 단일 주차(YYYY-Www) → 날짜범위/coverage 자동")
     ap.add_argument("--start-date", default=None)
     ap.add_argument("--end-date", default=None)
     ap.add_argument("--base-start-week", default=None)
     ap.add_argument("--base-end-week", default=None)
     ap.add_argument("--news-keyword", default=None)
+    ap.add_argument("--classifier", default="all", choices=["seasonal", "semantic", "person", "all"],
+                    help="cls 단계 전용: 실행할 분류기 선택")
     ap.add_argument("--test-mode", action="store_true")
     ap.add_argument("--test-max-weeks", type=int, default=None)
     ap.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -82,6 +85,11 @@ def main() -> int:
         # 입력(base_calculation)은 DB 에서 직접 읽는다(파일 의존 없음).
         from steps.z_score_filtering import run_z_score_filtering
         out = run_z_score_filtering()
+    elif step == "cls":
+        # 키워드 노이즈 분류. 입력=DB z_score_keywords(z>=2.0 스파이크).
+        # --classifier seasonal|semantic|person|all (기본 all). person 은 Kiwi 환경 필요.
+        from steps.keyword_classifier import run_keyword_classification
+        out = run_keyword_classification(args.classifier)
     elif step in ("56", "5", "6"):
         # 입력(z_score/weekly counts)은 DB에서 직접 읽는다(파일 의존 없음).
         from steps.trend_extractor import run_trend_extractor

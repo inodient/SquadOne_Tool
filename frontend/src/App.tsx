@@ -4,6 +4,7 @@ import Home from "./pages/Home";
 import TrendExplorer from "./pages/TrendExplorer";
 import Detail from "./pages/Detail";
 import WeekCompare from "./pages/WeekCompare";
+import PeriodTracker from "./pages/PeriodTracker";
 
 function WeekSelector() {
   const { week, weeks, setWeek } = useWeek();
@@ -32,6 +33,7 @@ function Header() {
           이번 주 추천
         </NavLink>
         <NavLink to="/trends">트렌드 익스플로러</NavLink>
+        <NavLink to="/track">기간 추적</NavLink>
         <NavLink to="/compare">주차 비교</NavLink>
       </nav>
       <div className="spacer" />
@@ -49,6 +51,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/trends" element={<TrendExplorer />} />
           <Route path="/trend/:keyword" element={<Detail />} />
+          <Route path="/track" element={<PeriodTracker />} />
           <Route path="/compare" element={<WeekCompare />} />
         </Routes>
       </main>

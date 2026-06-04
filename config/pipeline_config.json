@@ -26,6 +26,36 @@
     "moving_average_span": 4,
     "high_z_score_threshold": 2.0
   },
+  "keyword_class": {
+    "z_threshold": 2.0,
+    "seasonal": {
+      "week_tolerance": 1,
+      "min_seasonal_years": 3,
+      "min_ratio": 0.6,
+      "max_distinct_weeks": 15,
+      "dictionary": ["쥐띠", "소띠", "호랑이띠", "토끼띠", "용띠", "뱀띠", "말띠", "양띠", "원숭이띠", "닭띠", "개띠", "돼지띠"]
+    },
+    "semantic": {
+      "target_categories": ["politics"],
+      "margin_threshold": 0.15,
+      "min_top_similarity": 0.5,
+      "_note_buzzword": "buzzword 는 의미적으로 어떤 카테고리와도 분리가 안 되고(centroid가 산만) contrast에 넣으면 politics 재현율을 해쳐 제외함. 별도 신호(recency 등) 필요.",
+      "_note_dictionary": "정당 약어(정개특위·선대위·비대위)는 margin 0.15 바로 아래라 contrastive로 불안정 → 유한·기지 집합이므로 사전으로 확정 라벨(method='dictionary').",
+      "dictionary": {
+        "politics": ["정개특위", "선대위", "비대위", "당권", "당권파", "공관위", "최고위", "상임위", "특위", "원내대책회의", "비대위원장", "선대본", "당정청", "정무위", "운영위", "법사위", "정개특위원장", "공천관리위", "선거대책위", "비상대책위"]
+      },
+      "seeds": {
+        "politics": ["국회", "선거", "국회의원", "정당", "대선", "공천", "원내대표", "국정감사", "야당", "여당", "비대위", "최고위원", "당대표", "정치"],
+        "product": ["노트북", "원피스", "건조기", "골프", "운동화", "화장품", "가방", "의자", "냉장고", "텀블러", "패딩", "빙수"],
+        "general": ["반도체", "수출", "금리", "날씨", "태풍", "환율", "주가", "유가", "부동산", "고용"]
+      }
+    },
+    "person": {
+      "enabled": false,
+      "model_type": "cong",
+      "_note": "검증 결과 폐기(기본 비활성). 맨단어 NER(PS) 미동작, 누락 인명(김관태 등)은 NNG라 미탐, single_NNP는 451개 중 실제 인명 0·이란/제천/마라탕/침낭 등 고유명사·상품어 혼재 → 노이즈 제거에 무용·유해. 근본 해결은 1단계 문맥 NER(별도 과제)."
+    }
+  },
   "keysentence_extractor": {
     "keywords_per_week": 8,
     "min_docs": 10,
@@ -37,6 +67,8 @@
   "trend_extractor": {
     "anchor_top_n": 5,
     "persistence_min_count": 3,
+    "exclude_noise_classes": true,
+    "exclude_classes": ["seasonal", "politics"],
     "vector_top_k": 10,
     "vector_week_filter_field": "week",
     "vector_date_coverage": ["2016-W01", "2022-W52"],

@@ -49,11 +49,24 @@ export interface Trend {
   count: number | null;
   weekly_summary: string | null;
   evidence_doc_ids: string[] | null;
+  noise_classes: string[] | null;
 }
 
 export interface TrendsResponse {
   week: string;
   trends: Trend[];
+}
+
+export interface ExcludedTrend {
+  week: string;
+  keyword: string;
+  z_score: number | null;
+  noise_classes: string[] | null;
+}
+
+export interface ExcludedTrendsResponse {
+  week: string;
+  excluded: ExcludedTrend[];
 }
 
 export interface Group {
@@ -128,4 +141,56 @@ export interface GenerateStatus {
 export interface GenerateResponse {
   started: boolean;
   job: GenerateStatus;
+}
+
+// ── 기간(범위) 추적 (/v1/view/range/*) ──────────────────────────
+
+export interface LifecycleRangeRow {
+  week: string;
+  status: string | null;
+  count: number;
+}
+
+export interface LifecycleRangeResponse {
+  from: string;
+  to: string;
+  rows: LifecycleRangeRow[];
+}
+
+export interface ZScoreMatrixRow {
+  week: string;
+  keyword: string;
+  z_score: number | null;
+}
+
+export interface ZScoreRangeResponse {
+  from: string;
+  to: string;
+  keywords: string[];
+  rows: ZScoreMatrixRow[];
+}
+
+export interface ProductRangeRow {
+  week: string;
+  rank: number;
+  product_name: string | null;
+  selection_reason: string | null;
+}
+
+export interface ProductsRangeResponse {
+  from: string;
+  to: string;
+  rows: ProductRangeRow[];
+}
+
+export interface KeySentenceRangeRow {
+  week: string;
+  keysentence_count: number;
+  evidence_total: number;
+}
+
+export interface KeySentenceRangeResponse {
+  from: string;
+  to: string;
+  rows: KeySentenceRangeRow[];
 }
