@@ -274,6 +274,64 @@ def read_keyword_class(klass: str | None = None) -> pd.DataFrame:
     return pd.DataFrame(data, columns=["keyword", "class", "score", "method", "detail"])
 
 
+# ── 통합 Stage0: Qdrant 적재 상태(ingest_state) ───────────────────
+
+def read_ingest_state() -> Dict[str, str]:
+    """ingest_state 를 {source_file: checksum} 로 반환(증분 적재 판정용)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT source_file, checksum FROM newstrend.ingest_state")
+            return {str(f): str(c) for f, c in cur.fetchall()}
+
+
+def upsert_ingest_state(source_file: str, checksum: str, point_count: int, collection: str) -> None:
+    """단일 파일 적재 상태 upsert(파일명 PK)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO newstrend.ingest_state (source_file, checksum, point_count, collection) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (source_file) DO UPDATE SET "
+                "checksum = EXCLUDED.checksum, point_count = EXCLUDED.point_count, "
+                "collection = EXCLUDED.collection, ingested_at = now()",
+                (str(source_file), str(checksum), int(point_count), str(collection)),
+            )
+        conn.commit()
+
+
+# ── 통합 Stage7d: Naver 쇼핑 카테고리 분류체계 ─────────────────────
+
+def replace_naver_categories(rows: Iterable[Tuple[str, int, str, str, str, str, str, str, bool]]) -> int:
+    """naver_categories 전량 교체. rows: (cid, level, name, full_path, cat1..cat4, leaf)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE newstrend.naver_categories")
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.naver_categories "
+                    "(cid, level, name, full_path, cat1, cat2, cat3, cat4, leaf) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    rows,
+                )
+        conn.commit()
+    return len(rows)
+
+
+def read_naver_categories() -> pd.DataFrame:
+    """naver_categories 전체(상품 그라운딩 fuzzy 매칭용)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT cid, level, name, full_path, cat1, cat2, cat3, cat4, leaf "
+                "FROM newstrend.naver_categories"
+            )
+            data = cur.fetchall()
+    return pd.DataFrame(
+        data, columns=["cid", "level", "name", "full_path", "cat1", "cat2", "cat3", "cat4", "leaf"]
+    )
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:
