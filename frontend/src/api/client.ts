@@ -16,8 +16,19 @@ import type {
   ZScoreSeriesResponse,
 } from "./types";
 
-const BASE = (import.meta.env.VITE_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
+// 기본값 8010 = SquadOne_Tool REST. (8000/8001 은 SquadOne_AI 점유 → 기본값으로 쓰지 않음.)
+const BASE = (import.meta.env.VITE_API_BASE ?? "http://localhost:8010").replace(/\/$/, "");
 const API_KEY = import.meta.env.VITE_API_KEY ?? "";
+
+/** 단계별 raw 조회 응답(범용 테이블). */
+export interface RawTable {
+  table: string;
+  week_col: string | null;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+}
 
 async function get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
   const url = new URL(BASE + path);
@@ -69,4 +80,7 @@ export const api = {
     get<ProductsRangeResponse>("/v1/view/range/products", { from, to }),
   rangeKeySentence: (from: string, to: string) =>
     get<KeySentenceRangeResponse>("/v1/view/range/keysentence", { from, to }),
+  // 단계별 raw 조회 (단계 페이지 기본 출력)
+  raw: (table: string, week?: string, limit = 500) =>
+    get<RawTable>("/v1/view/raw", { table, week, limit }),
 };

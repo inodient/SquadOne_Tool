@@ -231,6 +231,20 @@ def get_keyword_enriched(week: Optional[str] = Query(default=None)) -> Dict[str,
     return {"week": w, "keywords": repo.read_keyword_enriched(w)}
 
 
+# ── 단계별 raw 조회 (프론트 단계 페이지 기본 출력) ─────────────────
+
+@router.get("/raw")
+def get_raw(
+    table: str = Query(..., description="newstrend 객체명(테이블/뷰)"),
+    week: Optional[str] = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=5000),
+) -> Dict[str, Any]:
+    """단계별 raw 행 조회. week 컬럼(week/as_of_week)이 있으면 주차 필터, 없으면 무시."""
+    # week 미지정 시 최신 주차로(주차 없는 객체는 read_raw_table 내부에서 무시)
+    w = week or repo.latest_week()
+    return repo.read_raw_table(table, w, limit)
+
+
 # ── 트렌드·상품 생성(5~7단계) 온디맨드 실행 ──────────────────────
 # 상품이 없는 주차에서 trend_extractor(6) → product_extractor(7)를 단일 주차로 실행한다.
 # 무겁고 외부 의존성(Qdrant/Ollama)이 필요하므로 백그라운드 스레드 + 인메모리 잡 상태로 처리한다.

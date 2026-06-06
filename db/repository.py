@@ -790,6 +790,50 @@ def read_enrichment(week: str) -> Dict[str, Any]:
     return out
 
 
+# ── 단계별 raw 조회 (프론트 단계 페이지용) ────────────────────────
+
+def list_newstrend_relations() -> Dict[str, List[str]]:
+    """newstrend 스키마의 테이블/뷰 → 컬럼 목록(raw 조회 화이트리스트)."""
+    out: Dict[str, List[str]] = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'newstrend' ORDER BY table_name, ordinal_position"
+            )
+            for t, c in cur.fetchall():
+                out.setdefault(str(t), []).append(str(c))
+    return out
+
+
+def read_raw_table(table: str, week: str | None = None, limit: int = 500) -> Dict[str, Any]:
+    """newstrend 객체의 raw 행을 주차 필터(있으면)로 반환. 화이트리스트=스키마 존재 객체.
+
+    week 컬럼이 'week' 또는 'as_of_week' 면 해당 주차로 필터, 없으면(예: keyword_class) 무시.
+    """
+    import re as _re
+
+    if not _re.match(r"^[a-z_][a-z0-9_]*$", table or ""):
+        raise ValueError(f"허용되지 않는 객체명: {table}")
+    rels = list_newstrend_relations()
+    if table not in rels:
+        raise ValueError(f"newstrend 에 없는 객체: {table}")
+    cols = rels[table]
+    weekcol = "week" if "week" in cols else ("as_of_week" if "as_of_week" in cols else None)
+    limit = max(1, min(int(limit), 5000))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if weekcol and week:
+                cur.execute(f"SELECT * FROM newstrend.{table} WHERE {weekcol} = %s LIMIT %s", (week, limit))
+            else:
+                cur.execute(f"SELECT * FROM newstrend.{table} LIMIT %s", (limit,))
+            rows = _rows_to_dicts(cur)
+    return {
+        "table": table, "week_col": weekcol, "columns": cols,
+        "rows": rows, "row_count": len(rows), "truncated": len(rows) >= limit,
+    }
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:
