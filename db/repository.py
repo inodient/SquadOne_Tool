@@ -332,6 +332,172 @@ def read_naver_categories() -> pd.DataFrame:
     )
 
 
+# ── 통합 Stage5B: 클러스터링/장기/시계열/주기 ─────────────────────
+
+def replace_clusters(week: str, rows: Iterable[tuple]) -> int:
+    """clusters 주차 단위 교체. rows: (cluster_id, cluster_theme, representative_terms,
+    keyword_count, avg_z_score, max_z_score, embedding_dim, reduced_dim)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.clusters WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.clusters (week, cluster_id, cluster_theme, "
+                    "representative_terms, keyword_count, avg_z_score, max_z_score, embedding_dim, reduced_dim) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def replace_cluster_keywords(week: str, rows: Iterable[tuple]) -> int:
+    """cluster_keywords 주차 단위 교체. rows: (cluster_id, keyword, z_score)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.cluster_keywords WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.cluster_keywords (week, cluster_id, keyword, z_score) "
+                    "VALUES (%s,%s,%s,%s)",
+                    [(week, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def replace_cluster_interpretation(week: str, rows: Iterable[tuple]) -> int:
+    """cluster_interpretation 주차 단위 교체. rows: (cluster_id, cluster_theme, keyword_count,
+    avg_z_score, representative_terms, final_interpretation, llm_model)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.cluster_interpretation WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.cluster_interpretation (week, cluster_id, cluster_theme, "
+                    "keyword_count, avg_z_score, representative_terms, final_interpretation, llm_model) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def read_cluster_keywords(week: str) -> pd.DataFrame:
+    """해당 주차 군집-키워드 멤버십."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, cluster_id, keyword, z_score FROM newstrend.cluster_keywords WHERE week = %s",
+                (week,),
+            )
+            data = cur.fetchall()
+    return pd.DataFrame(data, columns=["week", "cluster_id", "keyword", "z_score"])
+
+
+def read_clusters(week: str) -> List[Dict[str, Any]]:
+    """해당 주차 군집 메타(키워드 수 내림차순)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, cluster_id, cluster_theme, representative_terms, keyword_count, "
+                "avg_z_score, max_z_score FROM newstrend.clusters WHERE week = %s "
+                "ORDER BY keyword_count DESC NULLS LAST",
+                (week,),
+            )
+            return _rows_to_dicts(cur)
+
+
+def read_zscore_history(keywords: Sequence[str] | None = None, end_week: str | None = None) -> pd.DataFrame:
+    """z_score_keywords 이력(week,keyword,z_score). 장기 지속성 분석용.
+
+    keywords 지정 시 해당 키워드만, end_week 지정 시 그 주차까지.
+    """
+    conds, params = [], []
+    if keywords:
+        conds.append("keyword = ANY(%s)")
+        params.append(list(dict.fromkeys(keywords)))
+    if end_week:
+        conds.append("week <= %s")
+        params.append(end_week)
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT week, keyword, z_score FROM newstrend.z_score_keywords" + where, params)
+            data = cur.fetchall()
+    return pd.DataFrame(data, columns=["week", "keyword", "z_score"])
+
+
+def write_long_term_signals(week: str, df: pd.DataFrame) -> int:
+    """long_term_signals 주차 단위 교체."""
+    cols = ["keyword", "window_weeks", "active_weeks", "active_ratio", "mean_z", "median_z",
+            "p75_z", "slope_z_per_week", "latest_consecutive_active_weeks", "peak_week_z",
+            "long_term_score", "passes_thresholds", "selected_for_tracking"]
+    rows = [(week, *tuple(None if pd.isna(v) else v for v in r))
+            for r in df[cols].itertuples(index=False, name=None)]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.long_term_signals WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.long_term_signals (week, keyword, window_weeks, active_weeks, "
+                    "active_ratio, mean_z, median_z, p75_z, slope_z_per_week, latest_consecutive_active_weeks, "
+                    "peak_week_z, long_term_score, passes_thresholds, selected_for_tracking) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    rows,
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_trend_ts_cluster(week: str, rows: Iterable[tuple]) -> int:
+    """trend_ts_cluster 주차 단위 교체. rows: (cluster_id, cluster_volume, cluster_intensity,
+    keyword_count, is_active, stop_tracking)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.trend_ts_cluster WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.trend_ts_cluster (week, cluster_id, cluster_volume, "
+                    "cluster_intensity, keyword_count, is_active, stop_tracking) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_period_trend_signals(as_of_week: str, df: pd.DataFrame) -> int:
+    """period_trend_signals 기준주차 단위 교체."""
+    from psycopg.types.json import Json
+
+    cols = ["keyword", "point_mentions", "z_score_30d_baseline", "delta_1d_pct", "wow_7d_pct",
+            "micro_spike_rule", "macro_beta_ma7_90d", "macro_r2_90d", "macro_stable_uptrend",
+            "seasonal_ratio", "window_primary_label", "window_tags"]
+    rows = []
+    for r in df[cols].itertuples(index=False, name=None):
+        vals = list(r)
+        vals[-1] = Json(vals[-1]) if isinstance(vals[-1], (dict, list)) else None
+        vals = [None if (isinstance(v, float) and pd.isna(v)) else v for v in vals]
+        rows.append((as_of_week, *vals))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.period_trend_signals WHERE as_of_week = %s", (as_of_week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.period_trend_signals (as_of_week, keyword, point_mentions, "
+                    "z_score_30d_baseline, delta_1d_pct, wow_7d_pct, micro_spike_rule, macro_beta_ma7_90d, "
+                    "macro_r2_90d, macro_stable_uptrend, seasonal_ratio, window_primary_label, window_tags) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    rows,
+                )
+        conn.commit()
+    return len(rows)
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:
