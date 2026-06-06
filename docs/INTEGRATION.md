@@ -12,19 +12,20 @@
                      │
 [Stage0b 적재] steps/qdrant_ingest.py  (xlsx → 임베딩 → Qdrant news_10y_ko_v1, 증분)
                      │
-[Stage1~4 정형] keyword_extractor → frequency_matrix → base_calculation → z_score_filtering   (현행, DB)
+[1~4 정형] keyword_extractor → frequency_matrix → base_calculation → z_score_filtering   (DB)
                      │ newstrend.z_score_keywords
+[5 노이즈분류] keyword_classifier  (seasonal/politics/person → keyword_class)  ※6단계 anchor 제외용
+                     │
         ┌────────────┴───────────────┐
-[Stage5A 벡터]                   [Stage5B 군집(신규)]
+[6 트렌드(본선)]                  [6B 군집(통합, 6과 병행)]
  trend_extractor(벡터검색 생애주기)  clustering → cluster_interpretation
                                     trend_time_series_builder · long_term_trend_bridge · period_trend
                      │
-[Stage6 LLM 인텔]  llm_questionarie  6-1 브리프 → 6-2 관련상품 → 6-3 유튜브질의
-                     │
-[Stage7 상품]   product_extractor(현행 7A)
-[Stage7B]       geo_query → youtube_signal(VERC)
-[Stage7C]       demand_forecast · market_competition · social_vibe   (외부 API)
-[Stage7D]       naver_grounding (상품↔카테고리)
+[7 상품(본선)]   product_extractor
+   └ [7 보조·LLM인텔] llm_questionarie  6-1 브리프 → 6-2 관련상품 → 6-3 유튜브질의  (원 NewsTrend 6단계 유래)
+   └ [7B] geo_query → youtube_signal(VERC)
+   └ [7C] demand_forecast · market_competition · social_vibe   (외부 API)
+   └ [7D] naver_grounding (상품↔카테고리)
                      │
 [노출]  MCP: tool_news_trend.run_news_trend / run_product_extractor / run_enrichment
         REST: rest_mcp_server /v1/view/*  (enrichment·clusters·related-products 등)

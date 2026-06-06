@@ -36,7 +36,13 @@ def run_news_trend_pipeline(
     base_start_week: Optional[str] = None,
     base_end_week: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """뉴스 트렌드 파이프라인 1~6단계(키워드 추출 → 빈도 행렬 → 베이스 계산 → z-score → trend_extractor → product_extractor)."""
+    """뉴스 트렌드 본선 파이프라인.
+
+    단계 번호: 1 keyword_extractor → 2 frequency_matrix → 3 base_calculation →
+    4 z_score_filtering → [5 keyword_classifier(노이즈 분류)는 6단계 anchor 제외용 전제로,
+    별도 실행/사전 적재] → 6 trend_extractor(벡터검색 생애주기, keysentence 통합) →
+    7 product_extractor. (6B 군집·LLM인텔·7B/C/D 인리치먼트는 steps.enrichment_pipeline 참고.)
+    """
     logger = get_logger("tool_news_trend")
     started = time.perf_counter()
     if target_week is not None:
@@ -54,27 +60,29 @@ def run_news_trend_pipeline(
     # 1~4단계는 DB(newstrend 스키마)를 단일 권위 소스로 전달한다: 1→weekly_keywords,
     # 2→weekly_keyword_freq, 3→base_calculation(dense), 4→z_score_keywords.
     # SQUADONE_WRITE_FILES=false 여도 전체 파이프라인이 동작한다(병행 CSV는 디버깅용).
-    logger.info("[단계 1/4] keyword_extractor 호출")
+    logger.info("[단계 1/7] keyword_extractor 호출")
     weekly_keywords = run_keyword_extractor(start_date=start_date, end_date=end_date)
-    logger.info("[단계 1/4] 완료 | weeks=%d", len(weekly_keywords.get("weeks", [])))
+    logger.info("[단계 1/7] 완료 | weeks=%d", len(weekly_keywords.get("weeks", [])))
 
-    logger.info("[단계 2/4] frequency_matrix 호출 | weeks(in-memory)=%d", len(weekly_keywords.get("weeks", [])))
+    logger.info("[단계 2/7] frequency_matrix 호출 | weeks(in-memory)=%d", len(weekly_keywords.get("weeks", [])))
     frequency_matrix = run_frequency_matrix(weeks=weekly_keywords["weeks"])
-    logger.info("[단계 2/4] 완료 | freq_table=%s | recomputed_weeks=%s",
+    logger.info("[단계 2/7] 완료 | freq_table=%s | recomputed_weeks=%s",
                 frequency_matrix["freq_table"], frequency_matrix["recomputed_weeks"])
 
-    logger.info("[단계 3/4] base_calculation 호출 | input=newstrend.weekly_keyword_freq(DB)")
+    logger.info("[단계 3/7] base_calculation 호출 | input=newstrend.weekly_keyword_freq(DB)")
     base_calculation = run_base_calculation()
-    logger.info("[단계 3/4] 완료 | db_rows=%s", base_calculation.get("db_rows"))
+    logger.info("[단계 3/7] 완료 | db_rows=%s", base_calculation.get("db_rows"))
 
-    logger.info("[단계 4/4] z_score_filtering 호출 | base=newstrend.base_calculation(DB)")
+    logger.info("[단계 4/7] z_score_filtering 호출 | base=newstrend.base_calculation(DB)")
     z_score = run_z_score_filtering()
-    logger.info("[단계 4/4] 완료 | rows=%d", len(z_score["frame"]))
+    logger.info("[단계 4/7] 완료 | rows=%d", len(z_score["frame"]))
 
-    # P2: 5단계(keysentence)는 6단계(trend_extractor)에 흡수됨(2-phase 벡터검색). 별도 호출 없음.
+    # 6단계(trend_extractor)는 2-phase 벡터검색으로 keysentence(구 5)를 흡수한다. 5단계
+    # (keyword_classifier 노이즈 분류)는 keyword_class 테이블을 채워 6단계 anchor 제외에 쓰이며
+    # 본 본선에서 직접 호출하지 않는다(사전 적재 전제).
     # weekly counts(week,keyword,count)는 step2가 갱신한 DB weekly_keyword_freq 에서 읽는다.
     weekly_freq_df = repo.read_weekly_freq()
-    logger.info("[단계 5+6] trend_extractor 호출 (keysentence 통합) | weekly_freq_rows=%d", len(weekly_freq_df))
+    logger.info("[단계 6/7] trend_extractor 호출 (keysentence 통합) | weekly_freq_rows=%d", len(weekly_freq_df))
     trend_outputs = run_trend_extractor(
         z_score_df=z_score["frame"],
         weekly_df=weekly_freq_df,
@@ -88,7 +96,7 @@ def run_news_trend_pipeline(
         "csv": Path(trend_outputs["keysentence_csv"]),
         "json": Path(trend_outputs["keysentence_json"]),
     }
-    logger.info("[단계 5+6] 완료 | report_csv=%s | keysentence_csv=%s",
+    logger.info("[단계 6/7] 완료 | report_csv=%s | keysentence_csv=%s",
                 trend_outputs["report_csv"], trend_outputs["keysentence_csv"])
 
     logger.info("[단계 7/7] product_extractor 호출 | trend=in-memory frame")
@@ -229,7 +237,7 @@ if FastMCP is not None:
         base_start_week: Optional[str] = None,
         base_end_week: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """뉴스 트렌드 분석 파이프라인(1~6단계) 실행."""
+        """뉴스 트렌드 본선 파이프라인 실행(1~4 → 6 trend → 7 product; 5 노이즈분류는 전제)."""
         _mcp_logger.info(
             "MCP 도구 run_news_trend | START | target_week=%s | start_date=%s | end_date=%s | test_mode=%s | test_week_offset=%s | test_max_weeks=%s | news_keyword=%s",
             target_week,
