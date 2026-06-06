@@ -270,20 +270,74 @@ def run_semantic_classification() -> Dict[str, object]:
                 "by_category": results, "dictionary": dict_results}
 
 
+_HANGUL_RE = re.compile(r"^[가-힣]+$")
+
+
+def _is_namelike(word: str, surnames: set[str], name_len: tuple[int, int]) -> bool:
+    """이름꼴 사전필터: 한글만 + 길이 name_len + 흔한 성씨로 시작.
+
+    '외국 기자'·'담당 판사'처럼 직책어 앞에 오지만 이름 아닌 NNG는 성씨 조건에서 배제된다.
+    """
+    return bool(_HANGUL_RE.match(word)) and (name_len[0] <= len(word) <= name_len[1]) and word[0] in surnames
+
+
+def _title_adjacent_hits(keyword: str, texts: list[str], kiwi, titles: set[str]) -> tuple[int, list[str]]:
+    """texts(기사 스니펫) 중 keyword 토큰 '바로 다음'이 직책어인 기사 수(기사당 최대 1) + 직책어 목록."""
+    hits = 0
+    found: list[str] = []
+    for t in texts:
+        toks = kiwi.tokenize(t)
+        for i in range(len(toks) - 1):
+            if toks[i].form == keyword and toks[i + 1].form in titles:
+                hits += 1
+                found.append(toks[i + 1].form)
+                break
+    return hits, found
+
+
+def _scroll_body_texts(base: str, collection: str, field: str, keyword: str, limit: int, timeout_sec: float) -> list[str]:
+    """Qdrant scroll + payload 전문매치(match.text)로 keyword를 '실제 포함'하는 기사의 title+body를 반환.
+
+    벡터검색(search_contexts)은 의미 유사 기사를 주므로 희귀 인명이 본문에 없을 수 있다.
+    직책어 인접 판정엔 키워드가 실제 등장한 기사가 필요하므로 전문매치 스크롤을 쓴다.
+    """
+    import json
+    from urllib import request
+
+    payload = json.dumps({
+        "limit": int(limit),
+        "with_payload": True,
+        "filter": {"must": [{"key": field, "match": {"text": keyword}}]},
+    }).encode("utf-8")
+    req = request.Request(
+        f"{base}/collections/{collection}/points/scroll",
+        data=payload, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with request.urlopen(req, timeout=timeout_sec) as resp:
+        pts = json.loads(resp.read().decode("utf-8")).get("result", {}).get("points", []) or []
+    out: list[str] = []
+    for p in pts:
+        pl = p.get("payload") or {}
+        out.append(" ".join([
+            str(pl.get("title") or pl.get("제목") or ""),
+            str(pl.get("body") or pl.get("본문") or pl.get("content") or ""),
+        ]))
+    return out
+
+
 def run_person_classification() -> Dict[str, object]:
-    """고유명사(person 후보) 분류기: 후보 어휘를 Kiwi로 단독 토큰화해 고유명사를 라벨.
+    """인명 분류기 — 직책어 문맥 규칙(NER 미사용).
 
-    한계(검증으로 확인됨): 맨단어 토큰화에서는 Kiwi NER(PS)이 동작하지 않고(전부 None),
-    1단계에서 누락된 인명(예: 김관태·심준보)은 NNG(일반명사)로 태깅돼 일반어와 구분 불가하다.
-    오직 이미 사전에 등재된 유명 고유명사만 NNP로 잡힌다(윤석열·손흥민). 따라서 본 분류기는
-    '인명 정밀 탐지'가 아니라 '고유명사(person·기관·지명·브랜드 혼재) 약신호'다(score=0.5).
-    → 5단계 anchor 제외 기본 대상에서 제외하고 review 용도로만 사용하는 것을 권장.
-    근본적 인명 제거는 문맥 NER(1단계 재토큰화)이 필요(별도 과제).
-
-    kiwipiepy 미설치 시 안전하게 건너뛴다.
+    실증: 맨단어/인-맥락 모두 Kiwi NER(PS)은 None, 누락 인명(심준보)은 NNG라 일반어와 구분 불가.
+    유일하게 견고한 신호 = '이름은 직책어(의원·판사·기자·씨…) 앞에 온다'. 그래서:
+      ① 이름꼴 후보(성씨+길이2~3)만 추리고,
+      ② 각 후보의 Qdrant 스니펫에서 직책어 인접 빈도를 세어,
+      ③ min_title_hits 이상이면 person 라벨(method='context_title').
+    Qdrant 컨텍스트가 필요하므로 search_contexts(대표 스파이크 주차) 사용.
+    kiwipiepy/Qdrant 미가용 시 안전하게 건너뛴다.
     """
     logger = get_logger("steps.keyword_classifier")
-    with log_step(logger, 0, "person_classification", input="newstrend.z_score_keywords"):
+    with log_step(logger, 0, "person_classification", input="newstrend.z_score_keywords + Qdrant"):
         try:
             from kiwipiepy import Kiwi
         except ImportError:
@@ -297,43 +351,75 @@ def run_person_classification() -> Dict[str, object]:
         if not bool(p_cfg.get("enabled", True)):
             logger.info("person 분류 비활성(config) — 건너뜀.")
             return {"disabled": True, "labeled": 0}
-        # sbg 모델은 kiwipiepy 0.23에서 맨단어 루프 시 segfault → 안정적인 'cong' 기본 사용.
+
         model_type = str(p_cfg.get("model_type", "cong"))
+        surnames = set(p_cfg.get("surnames", []))
+        titles = set(p_cfg.get("titles", []))
+        _nl = p_cfg.get("name_len", [2, 3])
+        name_len = (int(_nl[0]), int(_nl[1]))
+        min_title_hits = int(p_cfg.get("min_title_hits", 3))
+        top_k_snippets = int(p_cfg.get("top_k_snippets", 10))
+        if not surnames or not titles:
+            raise ValueError("keyword_class.person.surnames/titles 가 비어 있습니다.")
 
+        match_field = str(p_cfg.get("match_field", "body"))
+        from db.config import qdrant_url as _qurl
+        vcfg = cfg.get("vector_db", {})
+        base = str(vcfg.get("qdrant_url") or _qurl()).rstrip("/")
+        collection = str(vcfg.get("collection", "news_10y_ko_v1"))
+        timeout_sec = float(vcfg.get("timeout_sec", 15))
+
+        # 이름꼴 후보(성씨+길이): z>=2.0 어휘에서 추림. 정밀 판정은 직책어 인접에서.
+        # exclude_suffixes: 학과·부처·기관 등 비인명 접미(부/과/처/학/원…) 제거. 정밀도 우선
+        # (over-block은 status quo와 동일·무해, FP는 실트렌드 오제외라 유해).
+        exclude_suffixes = tuple(p_cfg.get("exclude_suffixes", []))
         vocab = _candidate_vocab(z_threshold)
-        if not vocab:
-            raise ValueError(f"z>={z_threshold} 스파이크 어휘가 없습니다. (4단계를 먼저 실행)")
+        candidates = [
+            kw for kw in vocab
+            if _is_namelike(kw, surnames, name_len)
+            and not (exclude_suffixes and kw.endswith(exclude_suffixes))
+        ]
+        logger.info(
+            "person 후보 | z>=%.1f 어휘=%d | 이름꼴 후보=%d | min_title_hits=%d | scroll_limit=%d | field=%s",
+            z_threshold, len(vocab), len(candidates), min_title_hits, top_k_snippets, match_field,
+        )
+        if not candidates:
+            repo.write_keyword_class(pd.DataFrame(columns=["keyword", "score", "detail"]),
+                                     klass="person", method="context_title")
+            return {"vocab": len(vocab), "candidates": 0, "labeled": 0}
 
-        kiwi = Kiwi(model_type=model_type, load_default_dict=True)
-
-        def _classify(word: str) -> tuple[bool, str, float]:
-            toks = kiwi.tokenize(word)
-            # 강신호: NER PS(현 버전 맨단어에선 미동작이나 향후 호환 위해 유지)
-            for t in toks:
-                ner = getattr(t, "ner", None)
-                if ner:
-                    first = ner[0] if isinstance(ner, (list, tuple)) and ner else ner
-                    label = str(first[0]) if isinstance(first, (list, tuple)) and first else str(first)
-                    if label == "PS":
-                        return True, "ner_PS", 1.0
-            # 약신호: 단일 고유명사(NNP) — person/기관/지명/브랜드 혼재
-            if len(toks) == 1 and str(toks[0].tag) == "NNP":
-                return True, "single_NNP", 0.5
-            return False, "", 0.0
+        # 환경별 모델 가용성 차이: model_type 미지정/'default'이면 kiwipiepy 기본 모델 사용.
+        # (지정 모델 미설치 시 Kiwi가 C++ std::terminate로 죽어 try/except로 못 잡으므로 빈 값 권장.)
+        kiwi_kwargs: dict = {"load_default_dict": True}
+        if model_type and model_type.lower() not in ("", "default"):
+            kiwi_kwargs["model_type"] = model_type
+        kiwi = Kiwi(**kiwi_kwargs)
 
         rows: list[dict] = []
-        for kw in vocab:
-            ok, why, score = _classify(kw)
-            if ok:
-                rows.append({"keyword": kw, "score": score, "detail": {"reason": why}})
+        n_err = 0
+        for idx, kw in enumerate(candidates, start=1):
+            try:
+                texts = _scroll_body_texts(base, collection, match_field, kw, top_k_snippets, timeout_sec)
+            except Exception as exc:
+                n_err += 1
+                if n_err <= 5:
+                    logger.warning("person 본문매치 실패 | kw=%s | %s", kw, exc)
+                continue
+            hits, found = _title_adjacent_hits(kw, texts, kiwi, titles)
+            if hits >= min_title_hits:
+                rows.append({
+                    "keyword": kw, "score": float(hits),
+                    "detail": {"hits": hits, "titles": sorted(set(found))[:8], "articles": len(texts)},
+                })
+            if idx % 500 == 0:
+                logger.info("person 진행 | %d/%d | 누적라벨=%d | 검색오류=%d", idx, len(candidates), len(rows), n_err)
+
         df = pd.DataFrame(rows, columns=["keyword", "score", "detail"])
-        n_db = repo.write_keyword_class(df, klass="person", method="kiwi_nnp")
-        n_ps = sum(1 for r in rows if r["detail"]["reason"] == "ner_PS")
-        logger.info("person(고유명사) 분류 | 어휘=%d | 라벨=%d (PS강신호=%d, NNP약신호=%d) | model=%s",
-                    len(vocab), n_db, n_ps, n_db - n_ps, model_type)
-        for r in rows[:15]:
-            logger.info("  person | %s | %s | score=%.1f", r["keyword"], r["detail"]["reason"], r["score"])
-        return {"vocab": len(vocab), "labeled": n_db, "ps_strong": n_ps, "nnp_weak": n_db - n_ps}
+        n_db = repo.write_keyword_class(df, klass="person", method="context_title")
+        logger.info("person(직책어문맥) 분류 | 후보=%d | 라벨=%d | model=%s", len(candidates), n_db, model_type)
+        for r in sorted(rows, key=lambda x: x["score"], reverse=True)[:15]:
+            logger.info("  person | %s | hits=%d | titles=%s", r["keyword"], r["detail"]["hits"], r["detail"]["titles"])
+        return {"vocab": len(rep_week), "candidates": len(candidates), "labeled": n_db}
 
 
 def run_keyword_classification(which: str = "all") -> Dict[str, object]:
