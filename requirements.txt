@@ -23,3 +23,27 @@ uvicorn
 psycopg[binary]
 psycopg_pool
 python-dotenv
+
+# === 통합(Grand Integration) 추가 의존성 ===
+# Qdrant 읽기/쓰기(Stage0 적재 ingest 포함) · 임베딩 디바이스 감지
+qdrant-client
+torch
+# Stage0 수집: BigKinds·Naver 셀레니움 수집기
+selenium
+webdriver-manager
+requests
+# Stage0/P5 Agentic 스크래퍼: Playwright + ReAct(LangGraph)
+playwright
+playwright-stealth
+beautifulsoup4
+lxml
+pydantic
+pydantic-settings
+langgraph
+langchain-core
+langchain-google-genai
+langchain-ollama
+langchain-anthropic
+# Stage7 인리치먼트: 수요(Google Trends)·소셜/경쟁(YouTube/Naver API)
+pytrends
+google-api-python-client

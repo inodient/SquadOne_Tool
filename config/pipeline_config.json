@@ -152,5 +152,130 @@
     "full_max_rows": 200000,
     "full_max_cols": 400,
     "sample_rows": 200
+  },
+
+  "ingest": {
+    "data_dir": "data/news",
+    "collection": "news_10y_ko_v1",
+    "embed_model": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+    "embed_device": "auto",
+    "batch_size": 128,
+    "encode_batch_size": 64,
+    "named_vectors": ["title", "body"],
+    "distance": "cosine",
+    "normalize_embeddings": true,
+    "startup_retries": 8,
+    "startup_retry_delay_sec": 2,
+    "upsert_timeout_sec": 120,
+    "upsert_retries": 4,
+    "use_db_state": true
+  },
+
+  "clustering": {
+    "enabled": true,
+    "mode": "article_title",
+    "top_z_keywords": 30,
+    "max_titles_per_keyword": 15,
+    "max_total_titles": 8000,
+    "embedding_backend": "ko-sbert",
+    "embedding_fallbacks": ["kosimcse", "tfidf", "length"],
+    "umap": {"n_neighbors": 15, "n_components": 5, "min_dist": 0.0, "metric": "cosine"},
+    "hdbscan": {"min_cluster_size": 5, "min_samples": 1, "metric": "euclidean"},
+    "ctfidf_top_terms": 8,
+    "theme_llm_role": "cluster_theme",
+    "interpretation_llm_role": "cluster_interpretation",
+    "include_noise_cluster": false
+  },
+
+  "long_term_trend": {
+    "enabled": true,
+    "window_weeks": 156,
+    "min_active_ratio": 0.2,
+    "min_active_weeks": 36,
+    "min_mean_z": 0.15,
+    "min_p75_z": 0.5,
+    "min_slope": -0.002,
+    "min_long_term_score": 0.55,
+    "score_weights": {"active_ratio": 0.35, "mean_z": 0.2, "p75_z": 0.15, "slope": 0.15, "consecutive": 0.15},
+    "top_n_per_week": 80,
+    "spike_z_fallback": 2.5
+  },
+
+  "trend_time_series": {
+    "enabled": true,
+    "anchor_top_n": 8,
+    "survival_threshold": 0.5,
+    "stop_after_weeks_below": 4
+  },
+
+  "period_trend": {
+    "enabled": true,
+    "micro_spike_pct": 200.0,
+    "macro_window_days": 90,
+    "macro_ma_days": 7,
+    "macro_min_beta": 0.0,
+    "macro_min_r2": 0.7,
+    "momentum_z_strong": 2.0,
+    "recency_window_weeks": 4,
+    "top_keywords": 40
+  },
+
+  "llm_questionarie": {
+    "enabled": true,
+    "step_61": {"max_article_chars": 20000, "llm_role": "trend_brief"},
+    "step_62": {"num_products": 10, "llm_role": "related_products"},
+    "step_63": {"num_queries": 12, "llm_role": "youtube_queries"}
+  },
+
+  "geo_query": {
+    "enabled": true,
+    "drop_noise_cluster": true,
+    "llm_role": "geo_query",
+    "queries_per_cluster": 3
+  },
+
+  "youtube_signal": {
+    "enabled": true,
+    "api_key_env": ["YOUTUBE_API_KEY", "GOOGLE_API_KEY", "YT_API_KEY"],
+    "region_code": "KR",
+    "relevance_language": "ko",
+    "max_results": 20,
+    "weights": {"w1": 0.25, "w2": 0.25, "w3": 0.25, "w4": 0.25},
+    "z_threshold": 2.0,
+    "recency_weeks": 4,
+    "volume_norm": "batch",
+    "volume_global_log10_cap": 8.0,
+    "engagement_norm": "minmax",
+    "engagement_absolute_ratio_cap": 0.08,
+    "context_keywords": ["리뷰", "추천", "꿀템", "내돈내산", "후기", "언박싱", "솔직", "비교"]
+  },
+
+  "demand_forecast": {
+    "enabled": true,
+    "naver_datalab": true,
+    "pytrends": true,
+    "llm_role": "demand_analyst",
+    "delay_sec": 1.0
+  },
+
+  "market_competition": {
+    "enabled": true,
+    "naver_shopping": true,
+    "llm_role": "market_analyst",
+    "sample_size": 40
+  },
+
+  "social_vibe": {
+    "enabled": true,
+    "min_videos": 8,
+    "llm_role": "social_analyst",
+    "delay_sec": 1.0
+  },
+
+  "naver_categories": {
+    "enabled": true,
+    "base_delay_sec": 0.38,
+    "jitter_sec": 0.12,
+    "grounding_fuzzy_match": true
   }
 }
