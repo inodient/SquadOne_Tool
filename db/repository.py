@@ -702,9 +702,48 @@ def _select_week(table: str, week: str, order: str = "") -> List[Dict[str, Any]]
             return _rows_to_dicts(cur)
 
 
+def read_keyword_enriched(week: str) -> List[Dict[str, Any]]:
+    """[8-결합] 키워드 단위 결합 뷰: 소속 군집 + 장기 지속성 + 현재 움직임."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, keyword, cluster_id, cluster_theme, z_score, long_term_score, "
+                "active_ratio, selected_for_tracking, window_primary_label, macro_stable_uptrend, wow_7d_pct "
+                "FROM newstrend.v_keyword_enriched WHERE week = %s "
+                "ORDER BY long_term_score DESC NULLS LAST, z_score DESC NULLS LAST",
+                (week,),
+            )
+            return _rows_to_dicts(cur)
+
+
+def read_cluster_enriched(week: str) -> List[Dict[str, Any]]:
+    """[8-결합] 군집 단위 결합 뷰: 테마·부피·강도·해석 + 멤버 키워드 신호 롤업."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, cluster_id, cluster_theme, representative_terms, keyword_count, "
+                "avg_z_score, max_z_score, cluster_volume, cluster_intensity, is_active, "
+                "final_interpretation, avg_long_term_score, max_long_term_score, "
+                "tracked_keyword_count, member_keywords "
+                "FROM newstrend.v_cluster_enriched WHERE week = %s "
+                "ORDER BY cluster_intensity DESC NULLS LAST, cluster_volume DESC NULLS LAST",
+                (week,),
+            )
+            return _rows_to_dicts(cur)
+
+
 def read_enrichment(week: str) -> Dict[str, Any]:
     """해당 주차 통합 인리치먼트 산출 전체를 한 번에(대시보드 단일 호출)."""
     out: Dict[str, Any] = {"week": week}
+    # 8-결합 뷰(키워드↔클러스터) 우선 노출
+    try:
+        out["keyword_enriched"] = read_keyword_enriched(week)
+    except Exception:  # noqa: BLE001
+        out["keyword_enriched"] = []
+    try:
+        out["cluster_enriched"] = read_cluster_enriched(week)
+    except Exception:  # noqa: BLE001
+        out["cluster_enriched"] = []
     safe = lambda fn, default: (fn() if True else default)  # noqa: E731
     try:
         out["clusters"] = read_clusters(week)

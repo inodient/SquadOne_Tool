@@ -340,14 +340,53 @@ if FastMCP is not None:
 
 if FastMCP is not None:
 
+    @mcp.tool(name="run_clustering")
+    def run_clustering_tool(week: str) -> Dict[str, Any]:
+        """7단계(클러스터링): 기사 제목 군집화 + 군집 시계열 → clusters/cluster_keywords/
+        trend_ts_cluster. 전제: 해당 주차 z_score 적재. (해석은 8-신호-3)"""
+        from steps.enrichment_pipeline import run_stage7_clustering
+
+        _mcp_logger.info("MCP run_clustering | START | week=%s", week)
+        t0 = time.perf_counter()
+        try:
+            out = run_stage7_clustering(week)
+            _mcp_logger.info("MCP run_clustering | END | %.2fs | ok=%s/%s",
+                             time.perf_counter() - t0, out.get("ok"), out.get("total"))
+            return out
+        except Exception:
+            _mcp_logger.exception("MCP run_clustering | FAIL | %.2fs", time.perf_counter() - t0)
+            raise
+
+    @mcp.tool(name="run_sourcing")
+    def run_sourcing_tool(
+        week: str,
+        skip_external: bool = False,
+        top_n: int = 30,
+        run_product: bool = True,
+    ) -> Dict[str, Any]:
+        """8단계(사입 상품 추출, 다중 옵션): 신호(장기/주기/군집해석) → 결합 뷰 →
+        옵션(product_extractor·llm_questionarie·geo/VERC) → 검증(수요/경쟁/소셜)·그라운딩.
+        전제: 7단계 클러스터링 완료."""
+        from steps.enrichment_pipeline import run_stage8_sourcing
+
+        _mcp_logger.info("MCP run_sourcing | START | week=%s | skip_external=%s", week, skip_external)
+        t0 = time.perf_counter()
+        try:
+            out = run_stage8_sourcing(week, skip_external=skip_external, top_n=top_n, run_product=run_product)
+            _mcp_logger.info("MCP run_sourcing | END | %.2fs | ok=%s/%s",
+                             time.perf_counter() - t0, out.get("ok"), out.get("total"))
+            return out
+        except Exception:
+            _mcp_logger.exception("MCP run_sourcing | FAIL | %.2fs", time.perf_counter() - t0)
+            raise
+
     @mcp.tool(name="run_enrichment")
     def run_enrichment_tool(
         week: str,
         skip_external: bool = False,
         top_n: int = 30,
     ) -> Dict[str, Any]:
-        """통합 인리치먼트(Stage5B~7D) 실행: 군집·해석·장기/주기 신호·LLM 인텔(6-1/2/3)·
-        GEO/유튜브 VERC·수요/경쟁/소셜·Naver 그라운딩. 전제: 해당 주차 z_score 적재 완료."""
+        """7단계(클러스터링) + 8단계(사입 상품 추출) 통합 실행. 전제: 해당 주차 z_score 적재."""
         from steps.enrichment_pipeline import run_enrichment_pipeline
 
         _mcp_logger.info("MCP run_enrichment | START | week=%s | skip_external=%s", week, skip_external)

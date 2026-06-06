@@ -17,18 +17,20 @@
 [5 노이즈분류] keyword_classifier  (seasonal/politics/person → keyword_class)  ※6단계 anchor 제외용
                      │
         ┌────────────┴───────────────┐
-[6 트렌드(본선)]                  [6B 군집(통합, 6과 병행)]
- trend_extractor(벡터검색 생애주기)  clustering → cluster_interpretation
-                                    trend_time_series_builder · long_term_trend_bridge · period_trend
+[6 트렌드]                       [7 클러스터링]
+ trend_extractor(벡터검색)        7-1 clustering → clusters, cluster_keywords(척추)
+                                 7-2 trend_ts_cluster(군집 부피·강도)
+        │                             │
+        └──────────────┬──────────────┘
+        [8 사입 상품 추출 (다중 옵션)]
+   (가)신호  8-신호-1 long_term · 8-신호-2 period_trend · 8-신호-3 cluster_interpretation
+   (결합)   v_keyword_enriched · v_cluster_enriched (cluster_keywords 축 JOIN/롤업)
+   (나)옵션  8-1 product_extractor · 8-2 llm_questionarie(6-1/2/3) · 8-3 geo_query→youtube_signal(VERC)
+   (다)검증  demand_forecast · market_competition · social_vibe · naver_grounding
                      │
-[7 상품(본선)]   product_extractor
-   └ [7 보조·LLM인텔] llm_questionarie  6-1 브리프 → 6-2 관련상품 → 6-3 유튜브질의  (원 NewsTrend 6단계 유래)
-   └ [7B] geo_query → youtube_signal(VERC)
-   └ [7C] demand_forecast · market_competition · social_vibe   (외부 API)
-   └ [7D] naver_grounding (상품↔카테고리)
-                     │
-[노출]  MCP: tool_news_trend.run_news_trend / run_product_extractor / run_enrichment
-        REST: rest_mcp_server /v1/view/*  (enrichment·clusters·related-products 등)
+[노출]  MCP: run_news_trend(1~6) · run_clustering(7) · run_sourcing(8) · run_enrichment(7+8)
+        REST: /v1/view/* (enrichment·cluster-enriched·keyword-enriched·clusters·related-products)
+        ※ 상세 단계 스펙: 프로젝트 루트 product_extraction_logic.md
         Frontend: frontend/ (React) — 신규 /v1/view/enrichment 소비(확장 예정)
 ```
 

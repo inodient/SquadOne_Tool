@@ -47,11 +47,18 @@ def run_period_trend(as_of_week: str, *, candidate_keywords: Optional[List[str]]
     macro_min_r2 = float(cfg.get("macro_min_r2", 0.7))
     z_strong = float(cfg.get("momentum_z_strong", 2.0))
 
-    # 후보: 해당 주차 고z 상위 키워드
+    # 후보: 7단계 군집 키워드(cluster_keywords) ∪ 해당 주차 고z 상위
+    # → 결합 뷰(v_keyword_enriched) JOIN 누락 방지를 위해 7단계 키워드 집합을 포함한다.
     if candidate_keywords is None:
+        cands: set[str] = set()
+        try:
+            ck = repo.read_cluster_keywords(as_of_week)
+            cands |= set(ck["keyword"].tolist())
+        except Exception:  # noqa: BLE001
+            pass
         zhi = repo.read_zscore(start_week=as_of_week, end_week=as_of_week)
-        candidate_keywords = (zhi.sort_values("z_score", ascending=False)
-                              .head(top_k)["keyword"].tolist())
+        cands |= set(zhi.sort_values("z_score", ascending=False).head(top_k)["keyword"].tolist())
+        candidate_keywords = sorted(cands)
     if not candidate_keywords:
         logger.warning("[%s] period_trend 후보 없음", as_of_week)
         return {"week": as_of_week, "rows": 0}

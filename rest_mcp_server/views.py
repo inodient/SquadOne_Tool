@@ -212,9 +212,23 @@ def get_clusters(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
 
 @router.get("/related-products")
 def get_related_products(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
-    """해당 주차 사입 관련상품(6-2)."""
+    """해당 주차 사입 관련상품(8-2)."""
     w = _resolve_week(week)
     return {"week": w, "products": repo.read_related_products(w)}
+
+
+@router.get("/cluster-enriched")
+def get_cluster_enriched(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+    """[8-결합] 군집 단위 결합 뷰(테마·부피/강도·해석 + 멤버 키워드 신호 롤업)."""
+    w = _resolve_week(week)
+    return {"week": w, "clusters": repo.read_cluster_enriched(w)}
+
+
+@router.get("/keyword-enriched")
+def get_keyword_enriched(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+    """[8-결합] 키워드 단위 결합 뷰(소속 군집 + 장기 지속성 + 현재 움직임)."""
+    w = _resolve_week(week)
+    return {"week": w, "keywords": repo.read_keyword_enriched(w)}
 
 
 # ── 트렌드·상품 생성(5~7단계) 온디맨드 실행 ──────────────────────
