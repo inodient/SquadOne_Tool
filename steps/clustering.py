@@ -74,6 +74,9 @@ def _collect_titles(week: str, keywords: List[str], cfg: dict) -> List[Tuple[str
         qdrant_url=qdrant_url() or vcfg.get("qdrant_url", "http://localhost:6333"),
         collection=vcfg.get("collection", "news_10y_ko_v1"),
         timeout_sec=float(vcfg.get("timeout_sec", 30)),
+        # date 필드는 keyword 인덱스가 있어 빠르다. file_date 오버랩(미인덱스)을 끄면
+        # 주차 대량 수집이 ~275배 빨라진다(54s→0.2s). bulk 수집엔 date-only로 충분.
+        include_file_overlap=False,
     ):
         title = (art.get("title") or "").strip()
         if not title or title in seen_titles:

@@ -91,9 +91,12 @@ social_vibe · naver_categories` — 각 단계 파라미터/임계값/LLM role.
 - Qdrant URL 은 .env(QDRANT_HOST/PORT)가 단일 출처, config.vector_db.qdrant_url 은 폴백.
 
 ## 6. 알려진 이슈 / 운영 노트
-- **Qdrant 커버리지**: 컬렉션 `news_10y_ko_v1` 는 2016~2022 기사 위주. 그 밖 주차(예 2026)는
-  기사 0건 → clustering article_title 은 keyword_direct 로, 6-1 브리프는 근거 0건으로 graceful.
-  최신 주차 분석 전 `steps.qdrant_ingest` 로 해당 기간을 적재할 것.
+- **Qdrant 커버리지**: 컬렉션 `news_10y_ko_v1` 에 **9,437,094 포인트, 2016-01~2026-04 전 10년치
+  적재 완료**(연도별 고른 분포). 신규 데이터만 `steps.qdrant_ingest` 로 증분 적재.
+- **주차 필터 성능(해결됨)**: `date` 필드에 keyword 인덱스가 있어 날짜 필터는 빠르나(0.1s),
+  `file_date_start/end` 오버랩은 미인덱스라 주차 대량 스크롤이 ~55s(타임아웃)였다. clustering
+  article_title·6-1 브리프의 bulk 수집은 `include_file_overlap=False`(date-only)로 전환 →
+  54s→0.2s. (추가 최적화: file_date_* 에 payload range 인덱스 생성도 가능.)
 - **네이버 검색 API 401**: 현 NAVER 키가 데이터랩 전용일 수 있음. market_competition(쇼핑 검색)
   사용하려면 네이버 개발자센터 앱에 **검색 API** 사용 설정 필요.
 - **.venv pip shebang**: .venv 가 다른 머신(chang-macmini)에서 생성돼 `bin/pip` 래퍼 shebang 이

@@ -77,6 +77,8 @@ def run_llm_step_61(week: str, *, top_n: int = 30) -> int:
         qdrant_url=qdrant_url() or vcfg.get("qdrant_url", "http://localhost:6333"),
         collection=vcfg.get("collection", "news_10y_ko_v1"),
         timeout_sec=float(vcfg.get("timeout_sec", 30)),
+        # date 인덱스만으로 빠르게(미인덱스 file_date 오버랩 끔: 54s→0.2s).
+        include_file_overlap=False,
     ):
         title = art.get("title") or ""
         body = art.get("body") or ""
