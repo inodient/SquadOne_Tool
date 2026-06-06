@@ -194,6 +194,29 @@ def get_range_keysentence(
     return {"from": f, "to": t, "rows": repo.read_keysentence_range(f, t)}
 
 
+# ── 통합 인리치먼트 조회(Stage5B~7D) ──────────────────────────────
+
+@router.get("/enrichment")
+def get_enrichment(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+    """해당 주차 통합 인리치먼트 산출 전체(군집·해석·관련상품·GEO/유튜브질의·VERC신호·
+    수요/경쟁/소셜·장기/주기 신호·Naver 그라운딩)를 단일 응답으로."""
+    return repo.read_enrichment(_resolve_week(week))
+
+
+@router.get("/clusters")
+def get_clusters(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+    """해당 주차 군집 메타(키워드 수 내림차순)."""
+    w = _resolve_week(week)
+    return {"week": w, "clusters": repo.read_clusters(w)}
+
+
+@router.get("/related-products")
+def get_related_products(week: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+    """해당 주차 사입 관련상품(6-2)."""
+    w = _resolve_week(week)
+    return {"week": w, "products": repo.read_related_products(w)}
+
+
 # ── 트렌드·상품 생성(5~7단계) 온디맨드 실행 ──────────────────────
 # 상품이 없는 주차에서 trend_extractor(6) → product_extractor(7)를 단일 주차로 실행한다.
 # 무겁고 외부 의존성(Qdrant/Ollama)이 필요하므로 백그라운드 스레드 + 인메모리 잡 상태로 처리한다.

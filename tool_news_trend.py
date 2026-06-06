@@ -330,6 +330,30 @@ if FastMCP is not None:
             raise
 
 
+if FastMCP is not None:
+
+    @mcp.tool(name="run_enrichment")
+    def run_enrichment_tool(
+        week: str,
+        skip_external: bool = False,
+        top_n: int = 30,
+    ) -> Dict[str, Any]:
+        """통합 인리치먼트(Stage5B~7D) 실행: 군집·해석·장기/주기 신호·LLM 인텔(6-1/2/3)·
+        GEO/유튜브 VERC·수요/경쟁/소셜·Naver 그라운딩. 전제: 해당 주차 z_score 적재 완료."""
+        from steps.enrichment_pipeline import run_enrichment_pipeline
+
+        _mcp_logger.info("MCP run_enrichment | START | week=%s | skip_external=%s", week, skip_external)
+        t0 = time.perf_counter()
+        try:
+            out = run_enrichment_pipeline(week, skip_external=skip_external, top_n=top_n)
+            _mcp_logger.info("MCP run_enrichment | END | %.2fs | ok=%s/%s",
+                             time.perf_counter() - t0, out.get("steps_ok"), out.get("steps_total"))
+            return out
+        except Exception:
+            _mcp_logger.exception("MCP run_enrichment | FAIL | %.2fs", time.perf_counter() - t0)
+            raise
+
+
 if __name__ == "__main__":
     if FastMCP is None:
         raise RuntimeError("fastmcp 패키지가 설치되어 있지 않습니다.")

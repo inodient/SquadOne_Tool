@@ -691,6 +691,66 @@ def read_youtube_queries(week: str, cluster_id: int | None = None) -> List[Dict[
             return _rows_to_dicts(cur)
 
 
+# ── 통합 인리치먼트 조회(대시보드/REST) ───────────────────────────
+
+def _select_week(table: str, week: str, order: str = "") -> List[Dict[str, Any]]:
+    if not table.replace("_", "").isalnum():
+        raise ValueError(f"허용되지 않는 테이블명: {table}")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT * FROM newstrend.{table} WHERE week = %s {order}", (week,))
+            return _rows_to_dicts(cur)
+
+
+def read_enrichment(week: str) -> Dict[str, Any]:
+    """해당 주차 통합 인리치먼트 산출 전체를 한 번에(대시보드 단일 호출)."""
+    out: Dict[str, Any] = {"week": week}
+    safe = lambda fn, default: (fn() if True else default)  # noqa: E731
+    try:
+        out["clusters"] = read_clusters(week)
+    except Exception:  # noqa: BLE001
+        out["clusters"] = []
+    for tbl, order in [
+        ("cluster_interpretation", "ORDER BY cluster_id"),
+        ("related_products", "ORDER BY rank"),
+        ("geo_queries", "ORDER BY cluster_id, seq"),
+        ("youtube_queries", "ORDER BY cluster_id, seq"),
+        ("youtube_signals", "ORDER BY p_score DESC NULLS LAST"),
+        ("demand_forecast", "ORDER BY product_group"),
+        ("market_competition", "ORDER BY product_group"),
+        ("social_vibe", "ORDER BY viral_potential DESC NULLS LAST"),
+        ("trend_ts_cluster", "ORDER BY cluster_intensity DESC NULLS LAST"),
+    ]:
+        try:
+            out[tbl] = _select_week(tbl, week, order)
+        except Exception:  # noqa: BLE001
+            out[tbl] = []
+    # long_term / period 는 별도 PK(week / as_of_week)
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT keyword, long_term_score, active_ratio, slope_z_per_week, selected_for_tracking "
+                    "FROM newstrend.long_term_signals WHERE week=%s AND selected_for_tracking "
+                    "ORDER BY long_term_score DESC LIMIT 50", (week,))
+                out["long_term_signals"] = _rows_to_dicts(cur)
+                cur.execute(
+                    "SELECT keyword, window_primary_label, wow_7d_pct, macro_stable_uptrend, z_score_30d_baseline "
+                    "FROM newstrend.period_trend_signals WHERE as_of_week=%s ORDER BY z_score_30d_baseline DESC NULLS LAST LIMIT 50",
+                    (week,))
+                out["period_trend_signals"] = _rows_to_dicts(cur)
+    except Exception:  # noqa: BLE001
+        out["long_term_signals"] = out.get("long_term_signals", [])
+        out["period_trend_signals"] = out.get("period_trend_signals", [])
+    # 그라운딩(reports)
+    try:
+        grounding = read_reports(week, step="product_grounding")
+        out["product_grounding"] = grounding[0]["payload"] if grounding else None
+    except Exception:  # noqa: BLE001
+        out["product_grounding"] = None
+    return out
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:
