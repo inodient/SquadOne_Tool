@@ -567,6 +567,130 @@ def write_youtube_queries(week: str, cluster_id: int, rows: Iterable[tuple]) -> 
     return len(rows)
 
 
+# ── 통합 Stage7B/C: 상품 인리치먼트 ───────────────────────────────
+
+def write_geo_queries(week: str, cluster_id: int, rows: Iterable[tuple]) -> int:
+    """geo_queries (week, cluster_id) 단위 교체. rows: (seq, target_audience, query, expected_insight)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.geo_queries WHERE week = %s AND cluster_id = %s", (week, cluster_id))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.geo_queries (week, cluster_id, seq, target_audience, query, expected_insight) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    [(week, cluster_id, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_youtube_signals(week: str, rows: Iterable[tuple]) -> int:
+    """youtube_signals 주차 단위 교체. rows: (cluster_id, search_query, search_type, video_count,
+    total_views, avg_views, v, e, r, c, p, engagement_ratio_raw, context_ratio, meta:dict)."""
+    from psycopg.types.json import Json
+
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.youtube_signals WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.youtube_signals (week, cluster_id, search_query, search_type, "
+                    "video_count, total_views, avg_views, v_volume_score, e_engagement_score, r_recency_score, "
+                    "c_context_score, p_score, engagement_ratio_raw, context_ratio, meta) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, *r[:-1], Json(r[-1]) if isinstance(r[-1], dict) else None) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_demand_forecast(week: str, rows: Iterable[tuple]) -> int:
+    """demand_forecast 주차 단위 교체. rows: (product_group, keywords_used:list, demand_summary,
+    growth_signal, seasonality_hint, recommended_monitoring:list/dict)."""
+    from psycopg.types.json import Json
+
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.demand_forecast WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.demand_forecast (week, product_group, keywords_used, demand_summary, "
+                    "growth_signal, seasonality_hint, recommended_monitoring) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, pg, Json(kw), ds, gs, sh, Json(rm)) for pg, kw, ds, gs, sh, rm in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_market_competition(week: str, rows: Iterable[tuple]) -> int:
+    """market_competition 주차 단위 교체. rows: (product_group, market_query, total_estimated,
+    price_min, price_mean, price_max, competition_summary, estimated_margin_room, sample_titles:list)."""
+    from psycopg.types.json import Json
+
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.market_competition WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.market_competition (week, product_group, market_query, total_estimated, "
+                    "price_min, price_mean, price_max, competition_summary, estimated_margin_room, sample_titles) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, pg, mq, te, pmin, pmean, pmax, cs, mr, Json(st))
+                     for pg, mq, te, pmin, pmean, pmax, cs, mr, st in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_social_vibe(week: str, rows: Iterable[tuple]) -> int:
+    """social_vibe 주차 단위 교체. rows: (product_group, vibe_query, video_count, vibe_summary,
+    design_aesthetics:list, audience_pain_mentions:list, viral_potential, instagram_note)."""
+    from psycopg.types.json import Json
+
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.social_vibe WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.social_vibe (week, product_group, vibe_query, video_count, vibe_summary, "
+                    "design_aesthetics, audience_pain_mentions, viral_potential, instagram_note) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [(week, pg, vq, vc, vs, Json(da), Json(ap), vp, inote)
+                     for pg, vq, vc, vs, da, ap, vp, inote in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def read_related_products(week: str) -> List[Dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, rank, product_name, rationale, source_keyword "
+                "FROM newstrend.related_products WHERE week = %s ORDER BY rank",
+                (week,),
+            )
+            return _rows_to_dicts(cur)
+
+
+def read_youtube_queries(week: str, cluster_id: int | None = None) -> List[Dict[str, Any]]:
+    sql = "SELECT week, cluster_id, seq, search_query, search_type, reasoning FROM newstrend.youtube_queries WHERE week = %s"
+    params: list[Any] = [week]
+    if cluster_id is not None:
+        sql += " AND cluster_id = %s"
+        params.append(cluster_id)
+    sql += " ORDER BY cluster_id, seq"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return _rows_to_dicts(cur)
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:

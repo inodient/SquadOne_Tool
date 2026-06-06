@@ -12,9 +12,11 @@ import os
 from typing import Any, Dict, List, Optional
 
 from db import repository as repo
+from db.config import load_shared_env
 from steps.common import get_logger, load_config
 from steps.llm_factory import get_llm
 
+load_shared_env()  # LLM env 를 .env 에서 1회 로딩(멱등)
 logger = get_logger("cluster_interpretation")
 
 

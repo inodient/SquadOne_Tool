@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from db import repository as repo
-from db.config import qdrant_url
+from db.config import load_shared_env, qdrant_url
 from steps.common import get_logger, load_config
 from steps.llm_factory import get_llm
 from steps.qdrant_news import iter_week_articles
 
+load_shared_env()  # LLM env 를 .env 에서 1회 로딩(멱등)
 logger = get_logger("llm_questionarie")
 
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts" / "llm_questionarie"

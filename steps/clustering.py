@@ -18,12 +18,13 @@ import numpy as np
 import pandas as pd
 
 from db import repository as repo
-from db.config import qdrant_url
+from db.config import load_shared_env, qdrant_url
 from steps.common import get_logger, load_config
 from steps.llm_factory import get_llm
 from steps.qdrant_embed import embed_texts
 from steps.qdrant_news import iter_week_articles
 
+load_shared_env()  # LLM/임베딩 env 를 .env 에서 1회 로딩(멱등)
 logger = get_logger("clustering")
 
 _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]{2,}")
