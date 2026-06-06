@@ -1,0 +1,49 @@
+{
+  "service_name": "tool-suite-agentic-scrapper",
+  "protocol_version": "1.0.0",
+  "tool_contract_version": "1.0.0",
+  "tools": [
+    {
+      "name": "scrape",
+      "description": "Playwright ReAct 스크래핑 에이전트. URL 직접 스크래핑 또는 search_query 기반 탐색+추출을 지원합니다. 두 단계 캐시(Tier 1: selector cache, Tier 2: LLM ReAct)를 거쳐 구조화된 데이터를 추출합니다.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "스크래핑할 URL (http:// 또는 https://). search_query 사용 시 생략 가능."
+          },
+          "objective": {
+            "type": "string",
+            "description": "추출 목표. 예: '기사 제목과 URL 10개 추출', 'Get all product names and prices'."
+          },
+          "search_query": {
+            "type": "string",
+            "description": "URL 없이 검색어로 시작할 때 사용. 에이전트가 검색 후 가장 적합한 페이지로 이동합니다."
+          },
+          "no_cache": {
+            "type": "boolean",
+            "description": "true이면 Tier 1 selector cache를 무시하고 항상 전체 ReAct 실행."
+          }
+        },
+        "required": ["objective"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status":   {"type": "string", "enum": ["completed", "partial", "failed"]},
+          "result":   {
+            "type": ["object", "null"],
+            "description": "추출 결과: {run_id, success, step_count, cache_hit, items, count}"
+          },
+          "evidence": {"type": "array", "items": {"type": "object"}},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "error":    {"type": ["object", "null"]},
+          "timing":   {"type": "object"},
+          "meta":     {"type": "object"}
+        },
+        "required": ["status", "result", "evidence", "warnings", "error", "timing", "meta"]
+      }
+    }
+  ]
+}

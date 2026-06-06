@@ -1,0 +1,13 @@
+# Reproducible live smoke inputs (run with: pytest -m live).
+# Sites requiring login or with strict ToS should stay skipped in CI.
+- name: example_static
+  url: https://example.com/
+  objective: "Return the document title as string field title."
+  expect_keys:
+    - title
+
+- name: skip_placeholder_login_site
+  url: https://example.com/
+  objective: "Placeholder — replace with internal staging URL when running manually."
+  skip_if_not_env: REQUIRES_LOGIN
+  expect_keys: []
