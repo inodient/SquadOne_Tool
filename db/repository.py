@@ -498,6 +498,75 @@ def write_period_trend_signals(as_of_week: str, df: pd.DataFrame) -> int:
     return len(rows)
 
 
+# ── 통합 Stage6: LLM 인텔(브리프/관련상품/유튜브질의) ──────────────
+
+def write_llm_briefs(week: str, rows: Iterable[tuple]) -> int:
+    """llm_briefs 주차 단위 교체. rows: (keyword, brief_text, article_count, llm_model)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.llm_briefs WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.llm_briefs (week, keyword, brief_text, article_count, llm_model) "
+                    "VALUES (%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (week, keyword) DO UPDATE SET brief_text=EXCLUDED.brief_text, "
+                    "article_count=EXCLUDED.article_count, llm_model=EXCLUDED.llm_model, updated_at=now()",
+                    [(week, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def read_llm_briefs(week: str) -> pd.DataFrame:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, keyword, brief_text, article_count FROM newstrend.llm_briefs WHERE week = %s",
+                (week,),
+            )
+            data = cur.fetchall()
+    return pd.DataFrame(data, columns=["week", "keyword", "brief_text", "article_count"])
+
+
+def write_related_products(week: str, rows: Iterable[tuple]) -> int:
+    """related_products 주차 단위 교체. rows: (rank, product_name, rationale, source_keyword)."""
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.related_products WHERE week = %s", (week,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.related_products (week, rank, product_name, rationale, source_keyword) "
+                    "VALUES (%s,%s,%s,%s,%s)",
+                    [(week, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
+def write_youtube_queries(week: str, cluster_id: int, rows: Iterable[tuple]) -> int:
+    """youtube_queries (week, cluster_id) 단위 교체. rows: (seq, search_query, search_type, reasoning).
+
+    6-3(브리프 기반, 주차 단위)은 cluster_id=-1 센티넬, P4 군집별 생성은 실제 cluster_id.
+    """
+    rows = list(rows)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM newstrend.youtube_queries WHERE week = %s AND cluster_id = %s",
+                (week, cluster_id),
+            )
+            if rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.youtube_queries (week, cluster_id, seq, search_query, search_type, reasoning) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    [(week, cluster_id, *r) for r in rows],
+                )
+        conn.commit()
+    return len(rows)
+
+
 # ── 공통/검증 ────────────────────────────────────────────────────
 
 def table_count(table: str) -> int:

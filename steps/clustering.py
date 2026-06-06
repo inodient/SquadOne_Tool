@@ -70,7 +70,7 @@ def _collect_titles(week: str, keywords: List[str], cfg: dict) -> List[Tuple[str
     for art in iter_week_articles(
         week,
         logger=logger,
-        qdrant_url=vcfg.get("qdrant_url") or qdrant_url(),
+        qdrant_url=qdrant_url() or vcfg.get("qdrant_url", "http://localhost:6333"),
         collection=vcfg.get("collection", "news_10y_ko_v1"),
         timeout_sec=float(vcfg.get("timeout_sec", 30)),
     ):
