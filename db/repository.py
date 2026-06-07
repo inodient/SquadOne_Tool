@@ -859,10 +859,19 @@ def list_newstrend_relations() -> Dict[str, List[str]]:
     return out
 
 
-def read_raw_table(table: str, week: str | None = None, limit: int = 500) -> Dict[str, Any]:
+def read_raw_table(
+    table: str,
+    week: str | None = None,
+    limit: int = 500,
+    week_from: str | None = None,
+    week_to: str | None = None,
+) -> Dict[str, Any]:
     """newstrend 객체의 raw 행을 주차 필터(있으면)로 반환. 화이트리스트=스키마 존재 객체.
 
-    week 컬럼이 'week' 또는 'as_of_week' 면 해당 주차로 필터, 없으면(예: keyword_class) 무시.
+    week 컬럼('week' 또는 'as_of_week')이 있으면:
+      - week_from·week_to 둘 다 있으면 BETWEEN(기간 조회; ISO 주차는 사전식=시간순)
+      - 아니면 week 단일 일치
+    week 컬럼이 없으면(예: keyword_class) 필터 무시.
     """
     import re as _re
 
@@ -876,7 +885,14 @@ def read_raw_table(table: str, week: str | None = None, limit: int = 500) -> Dic
     limit = max(1, min(int(limit), 5000))
     with get_conn() as conn:
         with conn.cursor() as cur:
-            if weekcol and week:
+            if weekcol and week_from and week_to:
+                lo, hi = sorted([week_from, week_to])
+                cur.execute(
+                    f"SELECT * FROM newstrend.{table} WHERE {weekcol} BETWEEN %s AND %s "
+                    f"ORDER BY {weekcol} LIMIT %s",
+                    (lo, hi, limit),
+                )
+            elif weekcol and week:
                 cur.execute(f"SELECT * FROM newstrend.{table} WHERE {weekcol} = %s LIMIT %s", (week, limit))
             else:
                 cur.execute(f"SELECT * FROM newstrend.{table} LIMIT %s", (limit,))
@@ -884,6 +900,7 @@ def read_raw_table(table: str, week: str | None = None, limit: int = 500) -> Dic
     return {
         "table": table, "week_col": weekcol, "columns": cols,
         "rows": rows, "row_count": len(rows), "truncated": len(rows) >= limit,
+        "range": [week_from, week_to] if (weekcol and week_from and week_to) else None,
     }
 
 

@@ -224,3 +224,5 @@ table.cmp th { color: var(--muted); font-weight: 600; }
 /* 체크박스 열 */
 .raw-table th.chk-col, .raw-table td.chk-col { width: 30px; text-align: center; padding: 4px; }
 .raw-table tr.row-selected { background: #422006 !important; }
+
+.view-range { font-size: 12px; color: #34d399; }

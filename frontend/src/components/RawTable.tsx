@@ -37,6 +37,8 @@ export default function RawTable({
   note,
   limit = 500,
   refreshKey = 0,
+  weekFrom,
+  weekTo,
   selected,
   onToggle,
   onToggleMany,
@@ -47,11 +49,17 @@ export default function RawTable({
   note?: string;
   limit?: number;
   refreshKey?: number;
+  weekFrom?: string | null;
+  weekTo?: string | null;
   selected?: Set<string>;
   onToggle?: (keyword: string) => void;
   onToggleMany?: (keywords: string[], checked: boolean) => void;
 }) {
-  const st = useAsync(() => api.raw(table, week ?? undefined, limit), [table, week, limit, refreshKey]);
+  const useRange = !!(weekFrom && weekTo);
+  const st = useAsync(
+    () => api.raw(table, week ?? undefined, limit, useRange ? weekFrom! : undefined, useRange ? weekTo! : undefined),
+    [table, week, limit, refreshKey, weekFrom, weekTo]
+  );
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<Dir>("asc");
 
@@ -87,7 +95,11 @@ export default function RawTable({
           <span className="raw-meta">
             {st.data.row_count} rows
             {st.data.truncated && ` (상위 ${limit} 제한)`}
-            {st.data.week_col ? ` · ${st.data.week_col}=${week ?? "latest"}` : " · 주차무관"}
+            {st.data.week_col
+              ? useRange
+                ? ` · ${st.data.week_col} ${weekFrom}~${weekTo}`
+                : ` · ${st.data.week_col}=${week ?? "latest"}`
+              : " · 주차무관"}
           </span>
         )}
       </div>

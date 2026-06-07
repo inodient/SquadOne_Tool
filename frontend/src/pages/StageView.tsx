@@ -17,15 +17,17 @@ export default function StageView() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [weekFrom, setWeekFrom] = useState<string>("");
   const [weekTo, setWeekTo] = useState<string>("");
+  const [viewRange, setViewRange] = useState<{ from: string; to: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [rerun, setRerun] = useState<RerunJob | null>(null);
   const [msg, setMsg] = useState<string>("");
 
   const exclusions = useAsync(() => api.exclusions(), [refreshKey]);
 
-  // 단계/주차 전환 시 선택 초기화
+  // 단계/주차 전환 시 선택·조회기간 초기화(헤더 주차 단일 조회로 복귀)
   useEffect(() => {
     setSelected(new Set());
+    setViewRange(null);
     setMsg("");
   }, [slug, week]);
 
@@ -85,6 +87,16 @@ export default function StageView() {
       .catch(() => setBusy(false));
   };
 
+  const doQuery = () => {
+    // from/to 중 하나라도 선택되면 기간 조회, 둘 다 비우면 헤더 주차 단일 조회.
+    if (weekFrom || weekTo) {
+      setViewRange({ from: weekFrom || week || "", to: weekTo || week || "" });
+    } else {
+      setViewRange(null);
+    }
+    setRefreshKey((k) => k + 1);
+  };
+
   const doRerun = async () => {
     if (!week) return;
     setBusy(true);
@@ -114,7 +126,7 @@ export default function StageView() {
           선택 {selected.size}개 제외
         </button>
         <span className="tb-sep" />
-        <label className="tb-label">기간(재실행)</label>
+        <label className="tb-label">기간</label>
         <select value={weekFrom} onChange={(e) => setWeekFrom(e.target.value)}>
           <option value="">{week ?? "주차"}(기본)</option>
           {[...weeks].reverse().map((w) => (
@@ -128,9 +140,15 @@ export default function StageView() {
             <option key={w} value={w}>{w}</option>
           ))}
         </select>
+        <button className="btn" disabled={busy} onClick={doQuery}>
+          데이터 조회
+        </button>
         <button className="btn" disabled={busy} onClick={doRerun}>
           {busy && rerun?.status === "running" ? "재실행 중…" : `${stage.n}단계 재실행`}
         </button>
+        {viewRange && (
+          <span className="view-range">조회: {viewRange.from}~{viewRange.to}</span>
+        )}
         {rerun && rerun.status !== "idle" && (
           <span className={"rerun-status " + rerun.status}>
             {rerun.status === "running" ? "⏳ " : rerun.status === "success" ? "✅ " : "❌ "}
@@ -164,6 +182,8 @@ export default function StageView() {
           note={t.note}
           week={week}
           refreshKey={refreshKey}
+          weekFrom={viewRange?.from ?? null}
+          weekTo={viewRange?.to ?? null}
           selected={selected}
           onToggle={toggle}
           onToggleMany={toggleMany}

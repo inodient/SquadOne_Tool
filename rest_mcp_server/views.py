@@ -237,10 +237,13 @@ def get_keyword_enriched(week: Optional[str] = Query(default=None)) -> Dict[str,
 def get_raw(
     table: str = Query(..., description="newstrend 객체명(테이블/뷰)"),
     week: Optional[str] = Query(default=None),
+    week_from: Optional[str] = Query(default=None),
+    week_to: Optional[str] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=5000),
 ) -> Dict[str, Any]:
-    """단계별 raw 행 조회. week 컬럼(week/as_of_week)이 있으면 주차 필터, 없으면 무시."""
-    # week 미지정 시 최신 주차로(주차 없는 객체는 read_raw_table 내부에서 무시)
+    """단계별 raw 행 조회. week_from·week_to 지정 시 기간(BETWEEN) 조회, 아니면 단일 week."""
+    if week_from and week_to:
+        return repo.read_raw_table(table, None, limit, week_from=week_from, week_to=week_to)
     w = week or repo.latest_week()
     return repo.read_raw_table(table, w, limit)
 

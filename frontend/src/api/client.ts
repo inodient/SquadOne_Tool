@@ -80,9 +80,9 @@ export const api = {
     get<ProductsRangeResponse>("/v1/view/range/products", { from, to }),
   rangeKeySentence: (from: string, to: string) =>
     get<KeySentenceRangeResponse>("/v1/view/range/keysentence", { from, to }),
-  // 단계별 raw 조회 (단계 페이지 기본 출력)
-  raw: (table: string, week?: string, limit = 500) =>
-    get<RawTable>("/v1/view/raw", { table, week, limit }),
+  // 단계별 raw 조회 (단일 주차 또는 기간 from~to)
+  raw: (table: string, week?: string, limit = 500, weekFrom?: string, weekTo?: string) =>
+    get<RawTable>("/v1/view/raw", { table, week, week_from: weekFrom, week_to: weekTo, limit }),
   // 키워드 제외(분석 영구 제외)
   exclusions: () => get<ExclusionsResponse>("/v1/view/exclusions"),
   addExclusions: (keywords: string[]) =>
