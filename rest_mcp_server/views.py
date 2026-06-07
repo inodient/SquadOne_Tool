@@ -239,13 +239,15 @@ def get_raw(
     week: Optional[str] = Query(default=None),
     week_from: Optional[str] = Query(default=None),
     week_to: Optional[str] = Query(default=None),
-    limit: int = Query(default=500, ge=1, le=5000),
+    limit: int = Query(default=100, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
 ) -> Dict[str, Any]:
-    """단계별 raw 행 조회. week_from·week_to 지정 시 기간(BETWEEN) 조회, 아니면 단일 week."""
+    """단계별 raw 행 조회(페이징). week_from·week_to 지정 시 기간(BETWEEN), 아니면 단일 week.
+    total(총건수) + offset/limit 반환."""
     if week_from and week_to:
-        return repo.read_raw_table(table, None, limit, week_from=week_from, week_to=week_to)
+        return repo.read_raw_table(table, None, limit, week_from=week_from, week_to=week_to, offset=offset)
     w = week or repo.latest_week()
-    return repo.read_raw_table(table, w, limit)
+    return repo.read_raw_table(table, w, limit, offset=offset)
 
 
 # ── 트렌드·상품 생성(5~7단계) 온디맨드 실행 ──────────────────────

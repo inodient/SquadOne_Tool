@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useAsync } from "../hooks";
 import { Loading, Empty, ErrorBox } from "./ui";
@@ -56,14 +56,25 @@ export default function RawTable({
   onToggleMany?: (keywords: string[], checked: boolean) => void;
 }) {
   const useRange = !!(weekFrom && weekTo);
-  // 기간 조회는 여러 주차를 담아야 하므로 limit 상향(엔티티→주차 정렬과 함께).
-  const effLimit = useRange ? Math.max(limit, 2000) : limit;
+  const pageSize = limit; // 페이지당 행수
+  const [page, setPage] = useState(0);
+  // 표/주차/기간/새로고침 변경 시 1페이지로
+  useEffect(() => setPage(0), [table, week, weekFrom, weekTo, refreshKey]);
+
   const st = useAsync(
-    () => api.raw(table, week ?? undefined, effLimit, useRange ? weekFrom! : undefined, useRange ? weekTo! : undefined),
-    [table, week, effLimit, refreshKey, weekFrom, weekTo]
+    () =>
+      api.raw(
+        table, week ?? undefined, pageSize,
+        useRange ? weekFrom! : undefined, useRange ? weekTo! : undefined,
+        page * pageSize
+      ),
+    [table, week, pageSize, refreshKey, weekFrom, weekTo, page]
   );
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<Dir>("asc");
+
+  const total = st.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const onSort = (col: string) => {
     if (sortCol === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -95,8 +106,7 @@ export default function RawTable({
         {note && <span className="raw-note">{note}</span>}
         {st.data && (
           <span className="raw-meta">
-            {st.data.row_count} rows
-            {st.data.truncated && ` (상위 ${effLimit} 제한)`}
+            총 {total.toLocaleString()}행
             {st.data.week_col
               ? useRange
                 ? ` · ${st.data.week_col} ${weekFrom}~${weekTo}`
@@ -105,6 +115,18 @@ export default function RawTable({
           </span>
         )}
       </div>
+      {st.data && total > 0 && (
+        <div className="pager">
+          <button className="btn sm" disabled={page <= 0} onClick={() => setPage(0)}>«</button>
+          <button className="btn sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>‹</button>
+          <span className="pager-info">
+            {page + 1} / {totalPages} 페이지 · {(page * pageSize + 1).toLocaleString()}–
+            {Math.min((page + 1) * pageSize, total).toLocaleString()}행
+          </span>
+          <button className="btn sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}>›</button>
+          <button className="btn sm" disabled={page >= totalPages - 1} onClick={() => setPage(totalPages - 1)}>»</button>
+        </div>
+      )}
       {st.loading && <Loading />}
       {st.error && <ErrorBox message={st.error} />}
       {st.data && (st.data.rows.length === 0 ? (

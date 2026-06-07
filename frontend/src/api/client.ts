@@ -20,14 +20,16 @@ import type {
 const BASE = (import.meta.env.VITE_API_BASE ?? "http://localhost:8010").replace(/\/$/, "");
 const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 
-/** 단계별 raw 조회 응답(범용 테이블). */
+/** 단계별 raw 조회 응답(범용 테이블, 페이징). */
 export interface RawTable {
   table: string;
   week_col: string | null;
   columns: string[];
   rows: Record<string, unknown>[];
   row_count: number;
-  truncated: boolean;
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 async function get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
@@ -80,9 +82,9 @@ export const api = {
     get<ProductsRangeResponse>("/v1/view/range/products", { from, to }),
   rangeKeySentence: (from: string, to: string) =>
     get<KeySentenceRangeResponse>("/v1/view/range/keysentence", { from, to }),
-  // 단계별 raw 조회 (단일 주차 또는 기간 from~to)
-  raw: (table: string, week?: string, limit = 500, weekFrom?: string, weekTo?: string) =>
-    get<RawTable>("/v1/view/raw", { table, week, week_from: weekFrom, week_to: weekTo, limit }),
+  // 단계별 raw 조회 (단일 주차 또는 기간 from~to, 페이징 offset/limit)
+  raw: (table: string, week?: string, limit = 100, weekFrom?: string, weekTo?: string, offset = 0) =>
+    get<RawTable>("/v1/view/raw", { table, week, week_from: weekFrom, week_to: weekTo, limit, offset }),
   // 키워드 제외(분석 영구 제외)
   exclusions: () => get<ExclusionsResponse>("/v1/view/exclusions"),
   addExclusions: (keywords: string[]) =>

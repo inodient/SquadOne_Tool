@@ -862,16 +862,15 @@ def list_newstrend_relations() -> Dict[str, List[str]]:
 def read_raw_table(
     table: str,
     week: str | None = None,
-    limit: int = 500,
+    limit: int = 100,
     week_from: str | None = None,
     week_to: str | None = None,
+    offset: int = 0,
 ) -> Dict[str, Any]:
-    """newstrend 객체의 raw 행을 주차 필터(있으면)로 반환. 화이트리스트=스키마 존재 객체.
+    """newstrend 객체의 raw 행을 주차 필터(있으면) + 페이징(offset/limit)으로 반환.
 
-    week 컬럼('week' 또는 'as_of_week')이 있으면:
-      - week_from·week_to 둘 다 있으면 BETWEEN(기간 조회; ISO 주차는 사전식=시간순)
-      - 아니면 week 단일 일치
-    week 컬럼이 없으면(예: keyword_class) 필터 무시.
+    week 컬럼('week'/'as_of_week') 있으면: week_from·week_to 둘 다면 BETWEEN(기간), 아니면 week 단일.
+    안정 정렬(엔티티→주차)로 페이지 일관성 보장. total(총건수) 함께 반환.
     """
     import re as _re
 
@@ -883,29 +882,38 @@ def read_raw_table(
     cols = rels[table]
     weekcol = "week" if "week" in cols else ("as_of_week" if "as_of_week" in cols else None)
     limit = max(1, min(int(limit), 5000))
+    offset = max(0, int(offset))
+
+    # WHERE 절(범위/단일/무필터)
+    where, params = "", []
+    is_range = bool(weekcol and week_from and week_to)
+    if is_range:
+        lo, hi = sorted([week_from, week_to])
+        where = f" WHERE {weekcol} BETWEEN %s AND %s"
+        params = [lo, hi]
+    elif weekcol and week:
+        where = f" WHERE {weekcol} = %s"
+        params = [week]
+
+    # 안정 정렬: 엔티티(키워드/군집/상품 등) → 주차. 둘 다 없으면 첫 컬럼.
+    entity = next((k for k in ("keyword", "cluster_id", "product_name", "group_id", "rank") if k in cols), None)
+    order_cols = [c for c in (entity, weekcol) if c]
+    order_by = ", ".join(order_cols) if order_cols else cols[0]
+
     with get_conn() as conn:
         with conn.cursor() as cur:
-            if weekcol and week_from and week_to:
-                lo, hi = sorted([week_from, week_to])
-                # 엔티티(키워드/군집 등) → 주차 순으로 정렬해, 한 엔티티의 기간 행이 나란히
-                # 보이게 한다(상위 limit 안에서 모든 주차가 등장하도록).
-                entity = next((k for k in ("keyword", "cluster_id", "product_name", "group_id", "rank")
-                               if k in cols), None)
-                order_by = (f"{entity}, {weekcol}" if entity else weekcol)
-                cur.execute(
-                    f"SELECT * FROM newstrend.{table} WHERE {weekcol} BETWEEN %s AND %s "
-                    f"ORDER BY {order_by} LIMIT %s",
-                    (lo, hi, limit),
-                )
-            elif weekcol and week:
-                cur.execute(f"SELECT * FROM newstrend.{table} WHERE {weekcol} = %s LIMIT %s", (week, limit))
-            else:
-                cur.execute(f"SELECT * FROM newstrend.{table} LIMIT %s", (limit,))
+            cur.execute(f"SELECT count(*) FROM newstrend.{table}{where}", params)
+            total = int(cur.fetchone()[0])
+            cur.execute(
+                f"SELECT * FROM newstrend.{table}{where} ORDER BY {order_by} OFFSET %s LIMIT %s",
+                params + [offset, limit],
+            )
             rows = _rows_to_dicts(cur)
     return {
         "table": table, "week_col": weekcol, "columns": cols,
-        "rows": rows, "row_count": len(rows), "truncated": len(rows) >= limit,
-        "range": [week_from, week_to] if (weekcol and week_from and week_to) else None,
+        "rows": rows, "row_count": len(rows), "total": total,
+        "offset": offset, "limit": limit,
+        "range": [week_from, week_to] if is_range else None,
     }
 
 
