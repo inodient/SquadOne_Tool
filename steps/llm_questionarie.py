@@ -50,7 +50,14 @@ def _model_label() -> str:
 def _high_z(week: str, top_n: int):
     zdf = repo.read_zscore(start_week=week, end_week=week)
     thr = float(load_config().get("z_score", {}).get("high_z_score_threshold", 2.0))
-    zdf = zdf[zdf["z_score"] >= thr].sort_values("z_score", ascending=False).head(top_n)
+    zdf = zdf[zdf["z_score"] >= thr]
+    try:
+        excluded = repo.list_excluded_keywords()
+        if excluded:
+            zdf = zdf[~zdf["keyword"].isin(excluded)]
+    except Exception:  # noqa: BLE001
+        pass
+    zdf = zdf.sort_values("z_score", ascending=False).head(top_n)
     return zdf
 
 

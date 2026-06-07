@@ -194,3 +194,33 @@ table.cmp th { color: var(--muted); font-weight: 600; }
 .raw-table th.sorted { color: #93c5fd; }
 .sort-ind { font-size: 10px; opacity: 0.6; }
 .raw-table th.sorted .sort-ind { opacity: 1; }
+
+/* 단계 툴바 / 제외 / 재실행 */
+.stage-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 11px; margin-bottom: 8px; background: #0b1220;
+  border: 1px solid #1f2937; border-radius: 8px;
+}
+.stage-toolbar .tb-sep { width: 1px; height: 18px; background: #1f2937; margin: 0 4px; }
+.stage-toolbar .tb-label { font-size: 12px; color: #9ca3af; }
+.stage-toolbar select { background: #111827; color: #e5e7eb; border: 1px solid #334155; border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+.btn { background: #1f2937; color: #e5e7eb; border: 1px solid #334155; border-radius: 7px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn:hover:not(:disabled) { background: #2a3a52; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.danger { background: #7f1d1d; border-color: #b91c1c; }
+.btn.danger:hover:not(:disabled) { background: #991b1b; }
+.rerun-status { font-size: 12px; margin-left: auto; }
+.rerun-status.running { color: #fbbf24; }
+.rerun-status.success { color: #34d399; }
+.rerun-status.failed { color: #f87171; }
+.stage-msg { font-size: 12px; color: #93c5fd; margin: 0 0 10px; }
+
+.excl-panel { margin: 0 0 14px; font-size: 12px; }
+.excl-panel summary { cursor: pointer; color: #f59e0b; }
+.excl-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.excl-chip { background: #111827; border: 1px solid #334155; border-radius: 12px; padding: 2px 4px 2px 10px; display: inline-flex; align-items: center; gap: 4px; }
+.excl-chip button { background: none; border: none; color: #f87171; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; }
+
+/* 체크박스 열 */
+.raw-table th.chk-col, .raw-table td.chk-col { width: 30px; text-align: center; padding: 4px; }
+.raw-table tr.row-selected { background: #422006 !important; }

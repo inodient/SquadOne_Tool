@@ -3,7 +3,7 @@ import { api } from "../api/client";
 import { useAsync } from "../hooks";
 import { Loading, Empty, ErrorBox } from "./ui";
 
-/** 범용 raw 테이블 — newstrend 객체를 그대로 표로 출력(1차: raw data). 헤더 클릭 정렬 지원. */
+/** 범용 raw 테이블 — newstrend 객체 출력. 헤더 클릭 정렬 + (keyword 컬럼 시) 체크박스 선택. */
 function cell(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") {
@@ -16,12 +16,11 @@ function cell(v: unknown): string {
 
 type Dir = "asc" | "desc";
 
-/** 정렬 비교자 — null/undefined 는 항상 마지막, 숫자는 수치, 그 외 문자(자연 정렬). */
 function compare(a: unknown, b: unknown, dir: Dir): number {
   const an = a === null || a === undefined || a === "";
   const bn = b === null || b === undefined || b === "";
   if (an && bn) return 0;
-  if (an) return 1; // null 은 방향 무관 끝으로
+  if (an) return 1;
   if (bn) return -1;
   const mul = dir === "asc" ? 1 : -1;
   if (typeof a === "number" && typeof b === "number") return (a - b) * mul;
@@ -37,21 +36,28 @@ export default function RawTable({
   week,
   note,
   limit = 500,
+  refreshKey = 0,
+  selected,
+  onToggle,
+  onToggleMany,
 }: {
   table: string;
   label: string;
   week: string | null;
   note?: string;
   limit?: number;
+  refreshKey?: number;
+  selected?: Set<string>;
+  onToggle?: (keyword: string) => void;
+  onToggleMany?: (keywords: string[], checked: boolean) => void;
 }) {
-  const st = useAsync(() => api.raw(table, week ?? undefined, limit), [table, week, limit]);
+  const st = useAsync(() => api.raw(table, week ?? undefined, limit), [table, week, limit, refreshKey]);
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<Dir>("asc");
 
   const onSort = (col: string) => {
-    if (sortCol === col) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
+    if (sortCol === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
       setSortCol(col);
       setSortDir("asc");
     }
@@ -62,6 +68,14 @@ export default function RawTable({
     if (!sortCol) return data;
     return [...data].sort((r1, r2) => compare(r1[sortCol], r2[sortCol], sortDir));
   }, [st.data, sortCol, sortDir]);
+
+  const hasKeyword = !!st.data?.columns.includes("keyword");
+  const selectable = hasKeyword && !!onToggle;
+  const pageKeywords = useMemo(
+    () => (hasKeyword ? Array.from(new Set(rows.map((r) => String(r["keyword"])).filter(Boolean))) : []),
+    [rows, hasKeyword]
+  );
+  const allChecked = selectable && pageKeywords.length > 0 && pageKeywords.every((k) => selected?.has(k));
 
   return (
     <section className="raw-block">
@@ -86,6 +100,16 @@ export default function RawTable({
           <table className="raw-table">
             <thead>
               <tr>
+                {selectable && (
+                  <th className="chk-col">
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      onChange={(e) => onToggleMany?.(pageKeywords, e.target.checked)}
+                      title="이 표의 키워드 전체 선택"
+                    />
+                  </th>
+                )}
                 {st.data.columns.map((c) => (
                   <th
                     key={c}
@@ -100,15 +124,24 @@ export default function RawTable({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  {st.data!.columns.map((c) => (
-                    <td key={c} title={cell(row[c])}>
-                      {cell(row[c])}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {rows.map((row, i) => {
+                const kw = hasKeyword ? String(row["keyword"]) : "";
+                const checked = selectable && selected?.has(kw);
+                return (
+                  <tr key={i} className={checked ? "row-selected" : undefined}>
+                    {selectable && (
+                      <td className="chk-col">
+                        <input type="checkbox" checked={!!checked} onChange={() => onToggle?.(kw)} />
+                      </td>
+                    )}
+                    {st.data!.columns.map((c) => (
+                      <td key={c} title={cell(row[c])}>
+                        {cell(row[c])}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

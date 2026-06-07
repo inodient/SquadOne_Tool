@@ -790,6 +790,75 @@ def read_enrichment(week: str) -> Dict[str, Any]:
     return out
 
 
+# ── 사용자 키워드 제외(분석 영구 제외) ───────────────────────────
+
+def list_excluded_keywords() -> set[str]:
+    """수동 제외 키워드 집합. 1·6·7·8단계 키워드 선정에서 제외에 사용."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT keyword FROM newstrend.keyword_exclusions")
+            return {str(r[0]) for r in cur.fetchall()}
+
+
+def read_excluded_keywords() -> List[Dict[str, Any]]:
+    """제외 목록(생성 내림차순) — REST/대시보드용."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT keyword, reason, created_at FROM newstrend.keyword_exclusions "
+                "ORDER BY created_at DESC"
+            )
+            rows = _rows_to_dicts(cur)
+    for r in rows:
+        if r.get("created_at") is not None:
+            r["created_at"] = r["created_at"].isoformat()
+    return rows
+
+
+def add_keyword_exclusions(keywords: Iterable[str], reason: str = "manual") -> int:
+    """키워드 제외 추가(멱등 upsert). 반환: 입력 개수."""
+    rows = [(str(k).strip(), reason) for k in keywords if str(k).strip()]
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO newstrend.keyword_exclusions (keyword, reason) VALUES (%s, %s) "
+                "ON CONFLICT (keyword) DO UPDATE SET reason = EXCLUDED.reason",
+                rows,
+            )
+        conn.commit()
+    return len(rows)
+
+
+def purge_keywords_from_weekly(keywords: Iterable[str]) -> int:
+    """제외 키워드를 원천 fact(weekly_keywords)에서 삭제(파생 테이블은 단계 재실행으로 정리).
+
+    반환: 삭제된 행 수.
+    """
+    ks = [str(k).strip() for k in keywords if str(k).strip()]
+    if not ks:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.weekly_keywords WHERE keyword = ANY(%s)", (ks,))
+            n = cur.rowcount
+        conn.commit()
+    return int(n)
+
+
+def remove_keyword_exclusions(keywords: Iterable[str]) -> int:
+    """제외 해제(복원)."""
+    ks = [str(k).strip() for k in keywords if str(k).strip()]
+    if not ks:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.keyword_exclusions WHERE keyword = ANY(%s)", (ks,))
+        conn.commit()
+    return len(ks)
+
+
 # ── 단계별 raw 조회 (프론트 단계 페이지용) ────────────────────────
 
 def list_newstrend_relations() -> Dict[str, List[str]]:

@@ -58,6 +58,10 @@ def run_period_trend(as_of_week: str, *, candidate_keywords: Optional[List[str]]
             pass
         zhi = repo.read_zscore(start_week=as_of_week, end_week=as_of_week)
         cands |= set(zhi.sort_values("z_score", ascending=False).head(top_k)["keyword"].tolist())
+        try:
+            cands -= repo.list_excluded_keywords()
+        except Exception:  # noqa: BLE001
+            pass
         candidate_keywords = sorted(cands)
     if not candidate_keywords:
         logger.warning("[%s] period_trend 후보 없음", as_of_week)

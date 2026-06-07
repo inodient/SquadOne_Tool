@@ -54,6 +54,13 @@ def _high_z_keywords(week: str, top_n: int) -> pd.DataFrame:
                 zdf = zdf[~zdf["keyword"].isin(noisy)]
         except Exception as exc:  # noqa: BLE001
             logger.warning("노이즈 클래스 제외 skip: %s", exc)
+    # 사용자 수동 제외(keyword_exclusions)
+    try:
+        excluded = repo.list_excluded_keywords()
+        if excluded:
+            zdf = zdf[~zdf["keyword"].isin(excluded)]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("수동 제외 skip: %s", exc)
     return zdf.sort_values("z_score", ascending=False).head(top_n).reset_index(drop=True)
 
 

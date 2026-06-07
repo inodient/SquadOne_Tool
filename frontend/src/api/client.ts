@@ -83,4 +83,34 @@ export const api = {
   // 단계별 raw 조회 (단계 페이지 기본 출력)
   raw: (table: string, week?: string, limit = 500) =>
     get<RawTable>("/v1/view/raw", { table, week, limit }),
+  // 키워드 제외(분석 영구 제외)
+  exclusions: () => get<ExclusionsResponse>("/v1/view/exclusions"),
+  addExclusions: (keywords: string[]) =>
+    post<ExclusionsResponse & { added: number; purged_weekly_rows: number }>("/v1/view/exclusions", { keywords }),
+  removeExclusions: (keywords: string[]) =>
+    post<ExclusionsResponse & { removed: number }>("/v1/view/exclusions/remove", { keywords }),
+  // 단계 재실행(제외/기간 반영)
+  rerun: (stage: number, week: string, weekFrom?: string, weekTo?: string, skipExternal = false) =>
+    post<{ started: boolean; job: RerunJob }>("/v1/view/rerun", {
+      stage, week, week_from: weekFrom, week_to: weekTo, skip_external: skipExternal,
+    }),
+  rerunStatus: (week: string) => get<RerunJob>("/v1/view/rerun-status", { week }),
 };
+
+export interface Exclusion {
+  keyword: string;
+  reason: string | null;
+  created_at: string | null;
+}
+export interface ExclusionsResponse {
+  exclusions: Exclusion[];
+}
+export interface RerunJob {
+  week: string;
+  status: "idle" | "running" | "success" | "failed";
+  stage?: number;
+  step?: string;
+  message?: string;
+  error?: string;
+  elapsed?: number;
+}

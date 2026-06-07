@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any, Dict, Optional
 
@@ -342,4 +342,144 @@ def get_generate_status(week: str = Query(...)) -> Dict[str, Any]:
     """주차별 생성 잡 상태. 없으면 idle."""
     with _JOBS_LOCK:
         job = _JOBS.get(week)
+        return dict(job) if job else {"week": week, "status": "idle"}
+
+
+# ── 키워드 제외(분석 영구 제외) ───────────────────────────────────
+
+class KeywordsBody(BaseModel):
+    keywords: list[str]
+
+
+@router.get("/exclusions")
+def get_exclusions() -> Dict[str, Any]:
+    """수동 제외 키워드 목록."""
+    return {"exclusions": repo.read_excluded_keywords()}
+
+
+@router.post("/exclusions")
+def post_exclusions(body: KeywordsBody) -> Dict[str, Any]:
+    """키워드를 분석에서 제외. 제외 목록 등록 + 원천(weekly_keywords)에서 즉시 삭제.
+    파생 단계(2~8)는 재실행으로 반영된다."""
+    ks = [k.strip() for k in body.keywords if k and k.strip()]
+    if not ks:
+        raise HTTPException(status_code=400, detail="keywords 가 필요합니다.")
+    added = repo.add_keyword_exclusions(ks)
+    purged = repo.purge_keywords_from_weekly(ks)
+    return {"added": added, "purged_weekly_rows": purged, "exclusions": repo.read_excluded_keywords()}
+
+
+@router.post("/exclusions/remove")
+def post_exclusions_remove(body: KeywordsBody) -> Dict[str, Any]:
+    """제외 해제(복원). 재실행 시 다시 분석에 포함된다."""
+    removed = repo.remove_keyword_exclusions(body.keywords)
+    return {"removed": removed, "exclusions": repo.read_excluded_keywords()}
+
+
+# ── 단계 재실행(rerun) — 제외/기간 변경 반영 ──────────────────────
+
+_RERUN: Dict[str, Dict[str, Any]] = {}
+_RERUN_LOCK = threading.Lock()
+
+
+def _set_rerun(week: str, **fields: Any) -> Dict[str, Any]:
+    with _RERUN_LOCK:
+        job = _RERUN.setdefault(week, {"week": week})
+        job.update(fields)
+        return dict(job)
+
+
+def _rerun_busy() -> Optional[str]:
+    with _RERUN_LOCK:
+        for w, j in _RERUN.items():
+            if j.get("status") == "running":
+                return w
+    return None
+
+
+def _week_bounds(week: str) -> tuple[datetime, datetime]:
+    mon = datetime.strptime(week + "-1", "%G-W%V-%u")
+    return mon, mon + timedelta(days=6)
+
+
+def _weeks_in_range(wfrom: str, wto: str) -> list[str]:
+    mon_f, _ = _week_bounds(wfrom)
+    _, sun_t = _week_bounds(wto)
+    out: list[str] = []
+    cur = mon_f
+    while cur <= sun_t:
+        out.append(cur.strftime("%G-W%V"))
+        cur += timedelta(days=7)
+    return list(dict.fromkeys(out))
+
+
+def _run_stage(stage: int, week: str, wfrom: str, wto: str, skip_external: bool) -> None:
+    t0 = time.perf_counter()
+    try:
+        _set_rerun(week, step=f"stage{stage}", message=f"{stage}단계 재실행 중")
+        if stage == 1:
+            mon_f, _ = _week_bounds(wfrom)
+            _, sun_t = _week_bounds(wto)
+            import_module("steps.keyword_extractor").run_keyword_extractor(
+                start_date=mon_f.strftime("%Y-%m-%d"), end_date=sun_t.strftime("%Y-%m-%d"))
+        elif stage == 2:
+            import_module("steps.frequency_matrix").run_frequency_matrix(weeks=_weeks_in_range(wfrom, wto))
+        elif stage == 3:
+            import_module("steps.base_calculation").run_base_calculation()
+        elif stage == 4:
+            import_module("steps.z_score_filtering").run_z_score_filtering()
+        elif stage == 5:
+            import_module("steps.keyword_classifier").run_keyword_classification("all")
+        elif stage == 6:
+            import_module("steps.trend_extractor").run_trend_extractor(
+                None, None, None, base_start_week=wfrom, base_end_week=wto)
+        elif stage == 7:
+            import_module("steps.enrichment_pipeline").run_stage7_clustering(week)
+        elif stage == 8:
+            import_module("steps.enrichment_pipeline").run_stage8_sourcing(week, skip_external=skip_external)
+        else:
+            raise ValueError(f"알 수 없는 단계: {stage}")
+        _set_rerun(week, status="success", step="done",
+                   elapsed=round(time.perf_counter() - t0, 1),
+                   message=f"{stage}단계 재실행 완료", finished_at=_now())
+    except Exception as exc:  # noqa: BLE001
+        _set_rerun(week, status="failed", error=str(exc),
+                   elapsed=round(time.perf_counter() - t0, 1),
+                   message=f"{stage}단계 재실행 실패", finished_at=_now())
+
+
+class RerunBody(BaseModel):
+    stage: int
+    week: str
+    week_from: Optional[str] = None
+    week_to: Optional[str] = None
+    skip_external: bool = False
+
+
+@router.post("/rerun")
+def post_rerun(body: RerunBody) -> Dict[str, Any]:
+    """해당 단계를 백그라운드 재실행(제외/기간 반영). 기간 미지정 시 선택 주차 단독."""
+    week = (body.week or "").strip()
+    if not week:
+        raise HTTPException(status_code=400, detail="week 가 필요합니다.")
+    if body.stage < 1 or body.stage > 8:
+        raise HTTPException(status_code=400, detail="stage 는 1~8 이어야 합니다.")
+    busy = _rerun_busy()
+    if busy:
+        raise HTTPException(status_code=409, detail=f"다른 재실행({busy})이 진행 중입니다.")
+    wfrom = (body.week_from or week).strip()
+    wto = (body.week_to or week).strip()
+    job = _set_rerun(week, status="running", stage=body.stage, step="queued",
+                     error=None, week_from=wfrom, week_to=wto,
+                     message="재실행 시작", started_at=_now(), finished_at=None)
+    threading.Thread(target=_run_stage, args=(body.stage, week, wfrom, wto, body.skip_external),
+                     daemon=True).start()
+    return {"started": True, "job": job}
+
+
+@router.get("/rerun-status")
+def get_rerun_status(week: str = Query(...)) -> Dict[str, Any]:
+    """주차별 재실행 잡 상태. 없으면 idle."""
+    with _RERUN_LOCK:
+        job = _RERUN.get(week)
         return dict(job) if job else {"week": week, "status": "idle"}

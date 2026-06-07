@@ -1103,6 +1103,15 @@ def run_trend_extractor(
         except Exception as exc:
             logger.warning("keyword_class 로드 실패(제외 없이 진행): %s", exc)
 
+        # 사용자 수동 제외(keyword_exclusions) 합류 — anchor 선정에서 제외.
+        try:
+            _manual = repo.list_excluded_keywords()
+            if _manual:
+                exclude_kw |= _manual
+                logger.info("수동 제외 합류 | +%d개 (anchor 제외 총 %d)", len(_manual), len(exclude_kw))
+        except Exception as exc:
+            logger.warning("수동 제외 로드 실패(무시): %s", exc)
+
         llm_weekly = get_llm("individual_summary")
         llm_seq = get_llm("sequential_analysis")
 

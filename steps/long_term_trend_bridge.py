@@ -60,6 +60,10 @@ def run_long_term_trend_bridge(as_of_week: str, *, candidate_keywords: Optional[
         zhi = repo.read_zscore(start_week=as_of_week, end_week=as_of_week)
         thr = float(load_config().get("z_score", {}).get("high_z_score_threshold", 2.0))
         cands |= set(zhi[zhi["z_score"] >= thr]["keyword"].tolist())
+        try:
+            cands -= repo.list_excluded_keywords()
+        except Exception:  # noqa: BLE001
+            pass
         candidate_keywords = sorted(cands)
 
     if not candidate_keywords:
