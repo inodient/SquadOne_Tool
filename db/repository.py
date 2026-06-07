@@ -831,22 +831,6 @@ def add_keyword_exclusions(keywords: Iterable[str], reason: str = "manual") -> i
     return len(rows)
 
 
-def purge_keywords_from_weekly(keywords: Iterable[str]) -> int:
-    """제외 키워드를 원천 fact(weekly_keywords)에서 삭제(파생 테이블은 단계 재실행으로 정리).
-
-    반환: 삭제된 행 수.
-    """
-    ks = [str(k).strip() for k in keywords if str(k).strip()]
-    if not ks:
-        return 0
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM newstrend.weekly_keywords WHERE keyword = ANY(%s)", (ks,))
-            n = cur.rowcount
-        conn.commit()
-    return int(n)
-
-
 def remove_keyword_exclusions(keywords: Iterable[str]) -> int:
     """제외 해제(복원)."""
     ks = [str(k).strip() for k in keywords if str(k).strip()]

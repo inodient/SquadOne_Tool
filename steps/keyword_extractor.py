@@ -296,17 +296,8 @@ def _finalize_weekly(
         .sort_values(["week", "count"], ascending=[True, False])
     )
 
-    # 사용자 수동 제외(keyword_exclusions) — 1단계에서 원천 제거(재실행 시 전 단계 반영).
-    try:
-        from db import repository as _repo
-
-        _excluded = _repo.list_excluded_keywords()
-        if _excluded:
-            before = len(result)
-            result = result[~result["keyword"].isin(_excluded)]
-            logger.info("수동 제외 키워드 적용 | %d개 제외 어휘 | 행 %d→%d", len(_excluded), before, len(result))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("수동 제외 적용 skip: %s", exc)
+    # 주: 사용자 제외 키워드는 1단계에서 '삭제하지 않는다'(원천 데이터 보존).
+    # 제외는 keyword_exclusions 플래그로 저장되고, 분석 단계(6 trend·7 clustering·8)에서만 필터한다.
 
     # DB 적재(증분 upsert) — 병행 출력
     if write_to_db:

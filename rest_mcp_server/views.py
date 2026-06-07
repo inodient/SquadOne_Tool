@@ -359,14 +359,13 @@ def get_exclusions() -> Dict[str, Any]:
 
 @router.post("/exclusions")
 def post_exclusions(body: KeywordsBody) -> Dict[str, Any]:
-    """키워드를 분석에서 제외. 제외 목록 등록 + 원천(weekly_keywords)에서 즉시 삭제.
-    파생 단계(2~8)는 재실행으로 반영된다."""
+    """키워드에 '제외' 플래그를 달아 저장(원천 데이터는 삭제하지 않고 보존).
+    분석 단계(6 trend·7 clustering·8 사입추출)가 이 플래그를 필터한다. 정형(1~4)은 보존."""
     ks = [k.strip() for k in body.keywords if k and k.strip()]
     if not ks:
         raise HTTPException(status_code=400, detail="keywords 가 필요합니다.")
     added = repo.add_keyword_exclusions(ks)
-    purged = repo.purge_keywords_from_weekly(ks)
-    return {"added": added, "purged_weekly_rows": purged, "exclusions": repo.read_excluded_keywords()}
+    return {"added": added, "exclusions": repo.read_excluded_keywords()}
 
 
 @router.post("/exclusions/remove")

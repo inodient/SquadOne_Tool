@@ -86,7 +86,7 @@ export const api = {
   // 키워드 제외(분석 영구 제외)
   exclusions: () => get<ExclusionsResponse>("/v1/view/exclusions"),
   addExclusions: (keywords: string[]) =>
-    post<ExclusionsResponse & { added: number; purged_weekly_rows: number }>("/v1/view/exclusions", { keywords }),
+    post<ExclusionsResponse & { added: number }>("/v1/view/exclusions", { keywords }),
   removeExclusions: (keywords: string[]) =>
     post<ExclusionsResponse & { removed: number }>("/v1/view/exclusions/remove", { keywords }),
   // 단계 재실행(제외/기간 반영)

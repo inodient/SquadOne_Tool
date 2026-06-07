@@ -51,7 +51,7 @@ export default function StageView() {
     setMsg("");
     try {
       const r = await api.addExclusions(ks);
-      setMsg(`제외 ${r.added}건 적용 · 원천 ${r.purged_weekly_rows}행 삭제. 재실행으로 파생 단계 반영.`);
+      setMsg(`제외 플래그 ${r.added}건 저장(원천 데이터 보존). 분석 단계(6·7·8) 재실행 시 반영.`);
       setSelected(new Set());
       setRefreshKey((k) => k + 1);
     } catch (e) {
