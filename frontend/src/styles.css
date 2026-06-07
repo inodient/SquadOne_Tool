@@ -187,3 +187,10 @@ table.cmp th { color: var(--muted); font-weight: 600; }
 }
 .raw-table tbody tr:nth-child(odd) { background: #0b1220; }
 .raw-table tbody tr:hover { background: #14223b; }
+
+/* 정렬 가능한 헤더 */
+.raw-table th.sortable { cursor: pointer; user-select: none; }
+.raw-table th.sortable:hover { background: #1b2740; }
+.raw-table th.sorted { color: #93c5fd; }
+.sort-ind { font-size: 10px; opacity: 0.6; }
+.raw-table th.sorted .sort-ind { opacity: 1; }
