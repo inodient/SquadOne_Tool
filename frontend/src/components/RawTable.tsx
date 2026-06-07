@@ -115,18 +115,6 @@ export default function RawTable({
           </span>
         )}
       </div>
-      {st.data && total > 0 && (
-        <div className="pager">
-          <button className="btn sm" disabled={page <= 0} onClick={() => setPage(0)}>«</button>
-          <button className="btn sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>‹</button>
-          <span className="pager-info">
-            {page + 1} / {totalPages} 페이지 · {(page * pageSize + 1).toLocaleString()}–
-            {Math.min((page + 1) * pageSize, total).toLocaleString()}행
-          </span>
-          <button className="btn sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}>›</button>
-          <button className="btn sm" disabled={page >= totalPages - 1} onClick={() => setPage(totalPages - 1)}>»</button>
-        </div>
-      )}
       {st.loading && <Loading />}
       {st.error && <ErrorBox message={st.error} />}
       {st.data && (st.data.rows.length === 0 ? (
@@ -182,6 +170,18 @@ export default function RawTable({
           </table>
         </div>
       ))}
+      {st.data && total > 0 && (
+        <div className="pager">
+          <button className="btn sm" disabled={page <= 0} onClick={() => setPage(0)}>«</button>
+          <button className="btn sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>‹</button>
+          <span className="pager-info">
+            {page + 1} / {totalPages} 페이지 · {(page * pageSize + 1).toLocaleString()}–
+            {Math.min((page + 1) * pageSize, total).toLocaleString()}행
+          </span>
+          <button className="btn sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}>›</button>
+          <button className="btn sm" disabled={page >= totalPages - 1} onClick={() => setPage(totalPages - 1)}>»</button>
+        </div>
+      )}
     </section>
   );
 }
