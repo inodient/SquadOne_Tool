@@ -56,9 +56,11 @@ export default function RawTable({
   onToggleMany?: (keywords: string[], checked: boolean) => void;
 }) {
   const useRange = !!(weekFrom && weekTo);
+  // 기간 조회는 여러 주차를 담아야 하므로 limit 상향(엔티티→주차 정렬과 함께).
+  const effLimit = useRange ? Math.max(limit, 2000) : limit;
   const st = useAsync(
-    () => api.raw(table, week ?? undefined, limit, useRange ? weekFrom! : undefined, useRange ? weekTo! : undefined),
-    [table, week, limit, refreshKey, weekFrom, weekTo]
+    () => api.raw(table, week ?? undefined, effLimit, useRange ? weekFrom! : undefined, useRange ? weekTo! : undefined),
+    [table, week, effLimit, refreshKey, weekFrom, weekTo]
   );
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<Dir>("asc");
@@ -94,7 +96,7 @@ export default function RawTable({
         {st.data && (
           <span className="raw-meta">
             {st.data.row_count} rows
-            {st.data.truncated && ` (상위 ${limit} 제한)`}
+            {st.data.truncated && ` (상위 ${effLimit} 제한)`}
             {st.data.week_col
               ? useRange
                 ? ` · ${st.data.week_col} ${weekFrom}~${weekTo}`

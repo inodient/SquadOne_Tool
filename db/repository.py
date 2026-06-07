@@ -887,9 +887,14 @@ def read_raw_table(
         with conn.cursor() as cur:
             if weekcol and week_from and week_to:
                 lo, hi = sorted([week_from, week_to])
+                # 엔티티(키워드/군집 등) → 주차 순으로 정렬해, 한 엔티티의 기간 행이 나란히
+                # 보이게 한다(상위 limit 안에서 모든 주차가 등장하도록).
+                entity = next((k for k in ("keyword", "cluster_id", "product_name", "group_id", "rank")
+                               if k in cols), None)
+                order_by = (f"{entity}, {weekcol}" if entity else weekcol)
                 cur.execute(
                     f"SELECT * FROM newstrend.{table} WHERE {weekcol} BETWEEN %s AND %s "
-                    f"ORDER BY {weekcol} LIMIT %s",
+                    f"ORDER BY {order_by} LIMIT %s",
                     (lo, hi, limit),
                 )
             elif weekcol and week:
