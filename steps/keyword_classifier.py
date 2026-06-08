@@ -272,27 +272,54 @@ def run_semantic_classification() -> Dict[str, object]:
 
 _HANGUL_RE = re.compile(r"^[가-힣]+$")
 
+# 무공백 부착이 흔한 경칭 — '홍길동씨'처럼 키워드에 붙어 쓰여 공백 경계 검사를 면제한다.
+_HONORIFIC_TITLES = frozenset({"씨", "군", "양", "옹"})
+
 
 def _is_namelike(word: str, surnames: set[str], name_len: tuple[int, int]) -> bool:
     """이름꼴 사전필터: 한글만 + 길이 name_len + 흔한 성씨로 시작.
 
     '외국 기자'·'담당 판사'처럼 직책어 앞에 오지만 이름 아닌 NNG는 성씨 조건에서 배제된다.
+    품사(NNP) 검증은 단독 태깅이 불안정(심준보→[심/주/ㄴ/보], 강태윤→NNG)하므로
+    여기서 하지 않고, 문맥이 있는 _title_adjacent_hits 에서 in-context 로 적용한다.
     """
     return bool(_HANGUL_RE.match(word)) and (name_len[0] <= len(word) <= name_len[1]) and word[0] in surnames
 
 
 def _title_adjacent_hits(keyword: str, texts: list[str], kiwi, titles: set[str]) -> tuple[int, list[str]]:
-    """texts(기사 스니펫) 중 keyword 토큰 '바로 다음'이 직책어인 기사 수(기사당 최대 1) + 직책어 목록."""
-    hits = 0
+    """texts(기사 스니펫) 중 keyword 토큰 '바로 다음'이 직책어인 기사 수(기사당 최대 1) + 직책어 목록.
+
+    정밀도 보강 2종(일반명사 오탐 차단):
+      ① 인명 증거(ever-NNP): 스니펫 중 '한 번이라도' keyword 가 고유명사(NNP)로
+         인식돼야 인정. 일반명사 '권투/도핑/도매상/강골/고별' 은 모든 문맥에서 NNG 라 탈락.
+         (occurrence 별 NNP 요구는 바이라인 'OOO 기자' 문맥에서 진짜 인명도 NNG 가 돼
+          과탈락하므로 — 심준보/맹성규/류희림 — '한 번이라도 NNP' 게이트로 완화.)
+      ② 공백 경계: 동형이의 일반명사 직책어('선수/검사/대표/기자' 등)는 '권투선수'·'도핑검사'
+         처럼 복합어를 Kiwi 가 쪼갠 인접이 오탐을 만든다. keyword 와 직책어 사이 공백 경계가
+         있을 때만 카운트(경칭 씨/군/양/옹 은 무공백 부착이 흔해 면제).
+    ever-NNP 미충족 시 hits=0(라벨 불가). 우연히 NNP 로 잡히는 잔존 오탐(기감/도핑 등)은
+    config person.exclude_words 로 후보 단계에서 차단한다.
+    """
+    ever_nnp = False
     found: list[str] = []
     for t in texts:
         toks = kiwi.tokenize(t)
+        article_hit: str | None = None
         for i in range(len(toks) - 1):
-            if toks[i].form == keyword and toks[i + 1].form in titles:
-                hits += 1
-                found.append(toks[i + 1].form)
-                break
-    return hits, found
+            cur, nxt = toks[i], toks[i + 1]
+            if cur.form != keyword:
+                continue
+            if cur.tag.startswith("NNP"):
+                ever_nnp = True  # 인명 증거(전체 스니펫 누적)
+            if article_hit is None and nxt.form in titles:
+                # 비경칭 직책어는 공백 경계가 있을 때만(복합어 분해 오탐 차단)
+                if nxt.form in _HONORIFIC_TITLES or nxt.start - (cur.start + cur.len) > 0:
+                    article_hit = nxt.form
+        if article_hit is not None:
+            found.append(article_hit)
+    if not ever_nnp:
+        return 0, []
+    return len(found), found
 
 
 def _scroll_body_texts(base: str, collection: str, field: str, keyword: str, limit: int, timeout_sec: float) -> list[str]:
@@ -328,10 +355,12 @@ def _scroll_body_texts(base: str, collection: str, field: str, keyword: str, lim
 def run_person_classification() -> Dict[str, object]:
     """인명 분류기 — 직책어 문맥 규칙(NER 미사용).
 
-    실증: 맨단어/인-맥락 모두 Kiwi NER(PS)은 None, 누락 인명(심준보)은 NNG라 일반어와 구분 불가.
-    유일하게 견고한 신호 = '이름은 직책어(의원·판사·기자·씨…) 앞에 온다'. 그래서:
+    실증: Kiwi NER(PS)은 맨단어/인-맥락 모두 None이라 못 쓴다. 대신 in-context 품사가
+    유효 — 인명은 문맥에서 NNP(심준보·강태윤·권대희), 일반어는 NNG(권투·도핑·도매상)로
+    갈린다. 견고한 신호 = '인명(NNP)은 직책어(의원·판사·기자·씨…) 앞에 온다'. 그래서:
       ① 이름꼴 후보(성씨+길이2~3)만 추리고,
-      ② 각 후보의 Qdrant 스니펫에서 직책어 인접 빈도를 세어,
+      ② 각 후보의 Qdrant 스니펫에서 키워드가 NNP로 인식된 직책어 인접 빈도를 세어,
+         (복합어 분해 오탐은 공백 경계 검사로 차단 — _title_adjacent_hits 참조)
       ③ min_title_hits 이상이면 person 라벨(method='context_title').
     Qdrant 컨텍스트가 필요하므로 search_contexts(대표 스파이크 주차) 사용.
     kiwipiepy/Qdrant 미가용 시 안전하게 건너뛴다.
@@ -373,10 +402,13 @@ def run_person_classification() -> Dict[str, object]:
         # exclude_suffixes: 학과·부처·기관 등 비인명 접미(부/과/처/학/원…) 제거. 정밀도 우선
         # (over-block은 status quo와 동일·무해, FP는 실트렌드 오제외라 유해).
         exclude_suffixes = tuple(p_cfg.get("exclude_suffixes", []))
+        # exclude_words: ever-NNP 게이트를 우연히 통과하는 잔존 오탐(일반명사·회사명) 수동 차단.
+        exclude_words = set(p_cfg.get("exclude_words", []))
         vocab = _candidate_vocab(z_threshold)
         candidates = [
             kw for kw in vocab
             if _is_namelike(kw, surnames, name_len)
+            and kw not in exclude_words
             and not (exclude_suffixes and kw.endswith(exclude_suffixes))
         ]
         logger.info(
@@ -419,7 +451,7 @@ def run_person_classification() -> Dict[str, object]:
         logger.info("person(직책어문맥) 분류 | 후보=%d | 라벨=%d | model=%s", len(candidates), n_db, model_type)
         for r in sorted(rows, key=lambda x: x["score"], reverse=True)[:15]:
             logger.info("  person | %s | hits=%d | titles=%s", r["keyword"], r["detail"]["hits"], r["detail"]["titles"])
-        return {"vocab": len(rep_week), "candidates": len(candidates), "labeled": n_db}
+        return {"vocab": len(vocab), "candidates": len(candidates), "labeled": n_db}
 
 
 def run_keyword_classification(which: str = "all") -> Dict[str, object]:

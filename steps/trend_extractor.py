@@ -400,6 +400,10 @@ def _vector_search_named(
     }
     if qfilter is not None:
         body["filter"] = qfilter
+        # 필터+HNSW(ANN) recall 붕괴 회피: 주차 필터(9.4M→~17K)로 좁힌 뒤 exact 전수비교.
+        # ANN+filter 는 후보가 그래프상 흩어져 극소수(예: 3건)만 반환해 모든 키워드가
+        # 동일 무관 기사에 묶이는 버그가 있었다(필터 없을 땐 정상). exact 는 쿼리당 수십 ms.
+        body["params"] = {"exact": True}
     data = _post_json_safe(url, body, timeout_sec, logger, "QDRANT_VECTOR_SEARCH_FAIL")
     if not data:
         logger.info(
