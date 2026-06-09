@@ -364,6 +364,7 @@ def _collect_weekly_rows_from_qdrant(
     ctx_top_n = int(ctx_cfg.get("top_n", 2000))
     ctx_samples = int(ctx_cfg.get("samples", 3))
     ctx_nbr_k = int(ctx_cfg.get("neighbor_top_k", 5))
+    sense_cfg = (config.get("keyword_extractor", {}) or {}).get("sense", {}) or {}
 
     rows: List[Dict[str, str | int]] = []
     for week in weeks:
@@ -395,7 +396,8 @@ def _collect_weekly_rows_from_qdrant(
         if write_context:
             _persist_week_context(
                 week, week_kw_count, ctx_counter, nbr_counter,
-                top_n=ctx_top_n, samples=ctx_samples, nbr_k=ctx_nbr_k, logger=logger,
+                top_n=ctx_top_n, samples=ctx_samples, nbr_k=ctx_nbr_k,
+                sense_cfg=sense_cfg, logger=logger,
             )
     return rows
 
@@ -409,9 +411,13 @@ def _persist_week_context(
     top_n: int,
     samples: int,
     nbr_k: int,
+    sense_cfg: dict | None = None,
     logger,
 ) -> None:
-    """주차별 상위 top_n 빈도 키워드만 맥락(B 예문 top samples + C 주변어절 top nbr_k) 적재."""
+    """주차별 상위 top_n 빈도 키워드만 맥락(B 예문 top samples + C 주변어절 top nbr_k) 적재.
+
+    sense_cfg.enabled 면 같은 top_kws 에 대해 의미 분화(sense)도 산출·적재한다.
+    """
     from db import repository as repo
 
     top_kws = [kw for kw, _ in week_kw_count.most_common(top_n)]
@@ -429,6 +435,44 @@ def _persist_week_context(
     logger.info(
         "키워드 맥락 적재 | week=%s | 상위키워드=%d | context=%d행 | neighbor=%d행",
         week, len(top_kws), nc, nn,
+    )
+
+    if sense_cfg and bool(sense_cfg.get("enabled", False)):
+        _persist_week_sense(week, top_kws, ctx_counter, sense_cfg, logger)
+
+
+def _persist_week_sense(
+    week: str,
+    top_kws: List[str],
+    ctx_counter: Dict[str, Counter],
+    sense_cfg: dict,
+    logger,
+) -> None:
+    """의미 분화(sense) 산출·적재 — 임베딩 군집(방법 B). 임베딩 실행 환경(맥미니) 필요."""
+    from db import repository as repo
+    from steps.keyword_sense import compute_week_senses
+
+    model = sense_cfg.get("model")  # None 이면 기본 모델
+    device = sense_cfg.get("device", "auto")
+
+    def embed_fn(sentences: List[str]):
+        from steps.qdrant_embed import embed_texts
+        return embed_texts(sentences, model_name=model, device=device, normalize=True)
+
+    sense_rows = compute_week_senses(
+        week, top_kws, ctx_counter,
+        embed_fn=embed_fn,
+        distance_threshold=float(sense_cfg.get("distance_threshold", 0.35)),
+        max_senses=int(sense_cfg.get("max_senses", 6)),
+        neighbor_top_k=int(sense_cfg.get("neighbor_top_k", 5)),
+        min_occ_for_split=int(sense_cfg.get("min_occ_for_split", 5)),
+        min_contexts_for_split=int(sense_cfg.get("min_contexts_for_split", 3)),
+    )
+    n_sense = repo.replace_keyword_sense(week, sense_rows)
+    n_kw = len({r[1] for r in sense_rows})
+    logger.info(
+        "키워드 의미분화 적재 | week=%s | 키워드=%d | sense=%d행",
+        week, n_kw, n_sense,
     )
 
 

@@ -94,6 +94,28 @@ def replace_keyword_context(
     return len(ctx_rows), len(nbr_rows)
 
 
+def replace_keyword_sense(
+    week: str,
+    sense_rows: Sequence[Tuple[str, str, int, int, str, str, str, str]],
+) -> int:
+    """1단계 부가: 키워드 의미 분화(sense) 주차 단위 replace.
+
+    sense_rows: (week, keyword, sense_id, count, label, rep_before, rep_after, top_neighbors)
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.weekly_keyword_sense WHERE week=%s", (week,))
+            if sense_rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.weekly_keyword_sense "
+                    "(week, keyword, sense_id, count, label, rep_before, rep_after, top_neighbors) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    list(sense_rows),
+                )
+        conn.commit()
+    return len(sense_rows)
+
+
 # ── 2단계 (증분) ─────────────────────────────────────────────────
 
 def recompute_weekly_keyword_freq(weeks: Sequence[str]) -> int:

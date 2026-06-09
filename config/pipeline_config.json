@@ -78,6 +78,17 @@
       "top_n": 2000,
       "samples": 3,
       "neighbor_top_k": 5
+    },
+    "sense": {
+      "enabled": true,
+      "method": "embedding",
+      "model": null,
+      "device": "auto",
+      "distance_threshold": 0.35,
+      "max_senses": 6,
+      "neighbor_top_k": 5,
+      "min_occ_for_split": 5,
+      "min_contexts_for_split": 3
     }
   },
   "trend_extractor": {
