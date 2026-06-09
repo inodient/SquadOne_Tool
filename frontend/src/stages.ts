@@ -25,7 +25,10 @@ export const STAGES: StageDef[] = [
   },
   {
     n: 2, slug: "2", title: "2 빈도", desc: "frequency_matrix — SQL 증분 집계",
-    tables: [{ name: "weekly_keyword_freq", label: "weekly_keyword_freq (week·keyword·count)" }],
+    tables: [
+      { name: "weekly_keyword_freq_ctx_top", label: "맥락 보유 키워드 (week·keyword·count·대표맥락·주변어절)" },
+      { name: "weekly_keyword_freq_ctx_rest", label: "기타 키워드 (week·keyword·count)" },
+    ],
   },
   {
     n: 3, slug: "3", title: "3 기준선", desc: "base_calculation — TF-IDF + 104주 rolling mean/std",
