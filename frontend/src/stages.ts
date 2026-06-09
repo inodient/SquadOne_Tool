@@ -18,7 +18,10 @@ export interface StageDef {
 export const STAGES: StageDef[] = [
   {
     n: 1, slug: "1", title: "1 키워드", desc: "keyword_extractor — Qdrant 본문→Kiwi 명사→주차 빈도",
-    tables: [{ name: "weekly_keywords", label: "weekly_keywords (week·keyword·source·count)" }],
+    tables: [
+      { name: "weekly_keywords_ctx_top", label: "맥락 보유 키워드 (week·keyword·source·count·대표맥락·주변어절)" },
+      { name: "weekly_keywords_ctx_rest", label: "기타 키워드 (week·keyword·source·count)" },
+    ],
   },
   {
     n: 2, slug: "2", title: "2 빈도", desc: "frequency_matrix — SQL 증분 집계",

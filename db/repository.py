@@ -44,6 +44,56 @@ def upsert_weekly_keywords(rows: Iterable[WeeklyRow], *, batch_size: int = 5000)
     return processed
 
 
+def delete_weekly_keywords(weeks: Sequence[str]) -> int:
+    """주차 단위 replace — 해당 주차 행을 먼저 삭제(재실행 멱등성).
+
+    upsert 만으로는 고도화로 사라진 키워드의 old 행이 잔존하므로, 재생성 직전
+    처리 주차를 비워 깨끗이 교체한다.
+    """
+    weeks = list(dict.fromkeys(str(w) for w in weeks))
+    if not weeks:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM newstrend.weekly_keywords WHERE week = ANY(%s)", (weeks,)
+            )
+            n = cur.rowcount
+        conn.commit()
+    return int(n)
+
+
+def replace_keyword_context(
+    week: str,
+    ctx_rows: Sequence[Tuple[str, str, int, str, str, int]],
+    nbr_rows: Sequence[Tuple[str, str, str, str, int]],
+) -> Tuple[int, int]:
+    """1단계 부가: 키워드 맥락(B 예문 + C 주변어절) 주차 단위 replace.
+
+    ctx_rows: (week, keyword, rank, ctx_before, ctx_after, occ_count)
+    nbr_rows: (week, keyword, position, term, count)
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.weekly_keyword_context WHERE week=%s", (week,))
+            cur.execute("DELETE FROM newstrend.weekly_keyword_neighbor WHERE week=%s", (week,))
+            if ctx_rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.weekly_keyword_context "
+                    "(week, keyword, rank, ctx_before, ctx_after, occ_count) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    list(ctx_rows),
+                )
+            if nbr_rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.weekly_keyword_neighbor "
+                    "(week, keyword, position, term, count) VALUES (%s,%s,%s,%s,%s)",
+                    list(nbr_rows),
+                )
+        conn.commit()
+    return len(ctx_rows), len(nbr_rows)
+
+
 # ── 2단계 (증분) ─────────────────────────────────────────────────
 
 def recompute_weekly_keyword_freq(weeks: Sequence[str]) -> int:

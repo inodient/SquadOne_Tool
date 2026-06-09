@@ -72,6 +72,14 @@
     "scroll_max_pages": 8,
     "server_week_filter_file_overlap": true
   },
+  "keyword_extractor": {
+    "context": {
+      "enabled": true,
+      "top_n": 2000,
+      "samples": 3,
+      "neighbor_top_k": 5
+    }
+  },
   "trend_extractor": {
     "anchor_top_n": 5,
     "persistence_min_count": 3,

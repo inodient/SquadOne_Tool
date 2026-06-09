@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import bisect
 import re
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -71,6 +73,106 @@ def _coerce_news_date_series(raw: pd.Series) -> pd.Series:
     return out
 
 
+def _normalize_noun(word: str) -> str:
+    """NNG/VA 토큰에서 기호·한글자모(완성형 외) 제거. 숫자/영문/완성형 한글만 남긴다.
+
+    Kiwi sbg 가 일부 토큰을 기호 포함으로 NNG 오태깅한다:
+      - 앞뒤 기호: '0.25%포인트'→'포인트', '"여죄를'→'여죄', '!더중플'→'더중플'
+      - 내부 기호·깨진 자모: '시ᆞ군'→'시군', '의료ᆞ요양ᆞ돌봄'→'의료요양돌봄', '이접들#2'→'이접들2'
+    숫자는 의미일 수 있어 보존('1심'·'2심'·'제3자'·'코로나19'·'2루수'는 살아남는다).
+    정상 명사는 내부에 비단어문자가 없어 영향받지 않는다.
+    """
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", word.strip())
+
+
+def _is_valid_noun(word: str) -> bool:
+    """채택 조건: 2자 이상 + (한글 1자 이상 OR 영문 2자 이상 연속).
+
+    순수 숫자/기호/영문1자(50·-35·R1)는 배제하되, 제품·모델명(EV9·HBM3·SU7)과
+    영문 약어(AI·IT)는 보존한다 — 상품군 추천에 모델명이 의미 있는 신호이기 때문.
+    """
+    return len(word) >= 2 and bool(re.search(r"[가-힣]|[A-Za-z]{2,}", word))
+
+
+def _extract_nouns_with_pos(text: str, kiwi: Kiwi | None, stopwords: set[str]) -> List[Tuple[str, int]]:
+    """_extract_nouns 와 동일 규칙 + (공백 정규화 text 기준) char 시작위치.
+
+    맥락(context) 수집 시 명사 위치를 어절에 매핑하는 데 쓴다.
+    """
+    def _is_person_entity(token_obj: object) -> bool:
+        ner = getattr(token_obj, "ner", None)
+        if not ner:
+            return False
+        try:
+            if isinstance(ner, (list, tuple)):
+                first = ner[0]
+                if isinstance(first, (list, tuple)) and first:
+                    return str(first[0]) == "PS"
+                return str(first) == "PS"
+        except Exception:
+            return False
+        return False
+
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    if not text:
+        return []
+    if kiwi is not None:
+        out: List[Tuple[str, int]] = []
+        for token in kiwi.tokenize(text):
+            if token.tag.startswith("J"):
+                continue
+            if _is_person_entity(token):
+                continue
+            if token.tag == "NNG":
+                word = _normalize_noun(token.form)
+            elif token.tag == "VA":
+                base = _normalize_noun(token.form)
+                word = "" if not base else (base if base.endswith("다") else f"{base}다")
+            else:
+                continue
+            if _is_valid_noun(word) and word not in stopwords:
+                out.append((word, int(getattr(token, "start", 0))))
+        return out
+    return [
+        (m.group(), m.start())
+        for m in re.finditer(r"[가-힣]{2,}", text)
+        if m.group() not in stopwords
+    ]
+
+
+def _accumulate_context(
+    norm_text: str,
+    noun_pos: List[Tuple[str, int]],
+    ctx_counter: Dict[str, Counter],
+    nbr_counter: Dict[str, Dict[str, Counter]],
+    *,
+    before_n: int = 2,
+    after_n: int = 2,
+) -> None:
+    """각 명사의 앞/뒤 어절(띄어쓰기 단위)을 수집.
+
+    norm_text 는 _extract_nouns_with_pos 와 동일하게 공백 정규화된 본문이어야 위치가 맞다.
+    명사 char 위치 → bisect 로 소속 어절 → 앞 before_n / 뒤 after_n 어절.
+    """
+    eojeols = [(m.group(), m.start()) for m in re.finditer(r"\S+", norm_text)]
+    if not eojeols:
+        return
+    starts = [s for _, s in eojeols]
+    n = len(eojeols)
+    for word, pos in noun_pos:
+        i = bisect.bisect_right(starts, pos) - 1
+        if i < 0:
+            continue
+        before = [eojeols[j][0] for j in range(max(0, i - before_n), i)]
+        after = [eojeols[j][0] for j in range(i + 1, min(n, i + 1 + after_n))]
+        ctx_counter[word][(" ".join(before), " ".join(after))] += 1
+        nb = nbr_counter[word]
+        for t in before:
+            nb["before"][t] += 1
+        for t in after:
+            nb["after"][t] += 1
+
+
 def _extract_nouns(text: str, kiwi: Kiwi | None, stopwords: set[str]) -> List[str]:
     text = re.sub(r"\s+", " ", str(text)).strip()
     if not text:
@@ -102,16 +204,16 @@ def _extract_nouns(text: str, kiwi: Kiwi | None, stopwords: set[str]) -> List[st
             if _is_person_entity(token):
                 continue
 
-            # NNG: 일반명사 / VA: 형용사(기본형 처리)
+            # NNG: 일반명사 / VA: 형용사(기본형 처리). 앞뒤 기호 정제 후 채택.
             if token.tag == "NNG":
-                word = token.form.strip()
+                word = _normalize_noun(token.form)
             elif token.tag == "VA":
-                base = token.form.strip()
-                word = base if base.endswith("다") else f"{base}다"
+                base = _normalize_noun(token.form)
+                word = "" if not base else (base if base.endswith("다") else f"{base}다")
             else:
                 continue
 
-            if len(word) >= 2 and word not in stopwords:
+            if _is_valid_noun(word) and word not in stopwords:
                 tokens.append(word)
         return tokens
 
@@ -256,21 +358,78 @@ def _collect_weekly_rows_from_qdrant(
     weeks = weeks_in_range(start_ts, end_ts)
     logger.info("Qdrant 입력 | collection=%s | 주차수=%d | %s..%s", collection, len(weeks),
                 weeks[0] if weeks else "-", weeks[-1] if weeks else "-")
+    # 맥락(context) 부가 수집 설정 — 키워드 추출(weekly_keywords)은 불변.
+    ctx_cfg = (config.get("keyword_extractor", {}) or {}).get("context", {}) or {}
+    write_context = bool(ctx_cfg.get("enabled", False)) and kiwi is not None
+    ctx_top_n = int(ctx_cfg.get("top_n", 2000))
+    ctx_samples = int(ctx_cfg.get("samples", 3))
+    ctx_nbr_k = int(ctx_cfg.get("neighbor_top_k", 5))
+
     rows: List[Dict[str, str | int]] = []
     for week in weeks:
         n_art = 0
+        ctx_counter: Dict[str, Counter] = defaultdict(Counter)
+        nbr_counter: Dict[str, Dict[str, Counter]] = defaultdict(
+            lambda: {"before": Counter(), "after": Counter()}
+        )
+        week_kw_count: Counter = Counter()
         for art in iter_week_articles(
             week, logger=logger, qdrant_url=q_url, collection=collection,
             date_field=date_field, date_start_field=date_start_field, date_end_field=date_end_field,
             timeout_sec=timeout_sec, include_file_overlap=include_overlap,
         ):
             n_art += 1
-            nouns = _extract_nouns(art["body"], kiwi, stopwords)
             source_val = art["source"] or "unknown"
+            if write_context:
+                norm = re.sub(r"\s+", " ", str(art["body"])).strip()
+                noun_pos = _extract_nouns_with_pos(norm, kiwi, stopwords)
+                _accumulate_context(norm, noun_pos, ctx_counter, nbr_counter)
+                nouns = [w for w, _ in noun_pos]
+            else:
+                nouns = _extract_nouns(art["body"], kiwi, stopwords)
             for keyword in nouns:
                 rows.append({"week": week, "keyword": keyword, "source": str(source_val), "count": 1})
+                if write_context:
+                    week_kw_count[keyword] += 1
         logger.info("Qdrant 주차 수집 | week=%s | articles=%d | 누적행=%d", week, n_art, len(rows))
+        if write_context:
+            _persist_week_context(
+                week, week_kw_count, ctx_counter, nbr_counter,
+                top_n=ctx_top_n, samples=ctx_samples, nbr_k=ctx_nbr_k, logger=logger,
+            )
     return rows
+
+
+def _persist_week_context(
+    week: str,
+    week_kw_count: Counter,
+    ctx_counter: Dict[str, Counter],
+    nbr_counter: Dict[str, Dict[str, Counter]],
+    *,
+    top_n: int,
+    samples: int,
+    nbr_k: int,
+    logger,
+) -> None:
+    """주차별 상위 top_n 빈도 키워드만 맥락(B 예문 top samples + C 주변어절 top nbr_k) 적재."""
+    from db import repository as repo
+
+    top_kws = [kw for kw, _ in week_kw_count.most_common(top_n)]
+    ctx_rows: List[Tuple[str, str, int, str, str, int]] = []
+    nbr_rows: List[Tuple[str, str, str, str, int]] = []
+    for kw in top_kws:
+        for rank, ((before, after), cnt) in enumerate(ctx_counter[kw].most_common(samples), start=1):
+            ctx_rows.append((week, kw, rank, before or None, after or None, int(cnt)))
+        nb = nbr_counter[kw]
+        for term, cnt in nb["before"].most_common(nbr_k):
+            nbr_rows.append((week, kw, "before", term, int(cnt)))
+        for term, cnt in nb["after"].most_common(nbr_k):
+            nbr_rows.append((week, kw, "after", term, int(cnt)))
+    nc, nn = repo.replace_keyword_context(week, ctx_rows, nbr_rows)
+    logger.info(
+        "키워드 맥락 적재 | week=%s | 상위키워드=%d | context=%d행 | neighbor=%d행",
+        week, len(top_kws), nc, nn,
+    )
 
 
 def _finalize_weekly(
@@ -299,11 +458,15 @@ def _finalize_weekly(
     # 주: 사용자 제외 키워드는 1단계에서 '삭제하지 않는다'(원천 데이터 보존).
     # 제외는 keyword_exclusions 플래그로 저장되고, 분석 단계(6 trend·7 clustering·8)에서만 필터한다.
 
-    # DB 적재(증분 upsert) — 병행 출력
+    # DB 적재 — 처리 주차를 먼저 비우고(주차 replace) 재적재(멱등 재실행).
+    # upsert 만으로는 고도화로 사라진 키워드의 old 행이 잔존하므로 DELETE 선행.
     if write_to_db:
         from db import repository as repo
 
         db_rows = list(result[["week", "keyword", "source", "count"]].itertuples(index=False, name=None))
+        weeks_to_replace = sorted(result["week"].astype(str).unique().tolist())
+        n_del = repo.delete_weekly_keywords(weeks_to_replace)
+        logger.info("주차 replace | 기존 삭제=%d행 | weeks=%d", n_del, len(weeks_to_replace))
         n_db = repo.upsert_weekly_keywords(db_rows)
         logger.info("DB 적재 weekly_keywords | upsert=%d행", n_db)
 
