@@ -173,6 +173,82 @@ def _accumulate_context(
             nb["after"][t] += 1
 
 
+def _sentence_spans(norm_text: str) -> List[Tuple[str, int]]:
+    """공백 정규화된 본문을 문장으로 분리. (문장텍스트, 시작 char위치) 목록.
+
+    위치는 norm_text(=_extract_nouns_with_pos 입력과 동일) 기준이라 명사 char위치와 정렬된다.
+    종결부호(. ! ? 。！？) + 공백을 경계로 자른다(개행은 이미 공백으로 정규화됨).
+    """
+    spans: List[Tuple[str, int]] = []
+    pos = 0
+    for m in re.finditer(r"(?<=[\.\!\?。！？])\s+", norm_text):
+        spans.append((norm_text[pos:m.start()].strip(), pos))
+        pos = m.end()
+    if pos < len(norm_text):
+        spans.append((norm_text[pos:].strip(), pos))
+    return spans
+
+
+def _accumulate_sentences(
+    title: str,
+    norm_body: str,
+    noun_pos: List[Tuple[str, int]],
+    kiwi: "Kiwi | None",
+    stopwords: set[str],
+    sent_weight: Dict[str, float],
+    sent_kws: Dict[str, Counter],
+    *,
+    title_weight: float,
+    body_base: float,
+    body_decay: float,
+    min_sent_w: float,
+    min_sent_len: int,
+    lead_n: int,
+) -> None:
+    """sense(대안 C) 입력 수집 — 문장 중심. 제목 + 본문 리드 lead_n 문장만.
+
+    우선순위: 제목(title_weight) > 본문. 본문은 앞 문장일수록 큰 가중(body_base * body_decay**i).
+    sent_weight[문장] += weight,  sent_kws[문장][키워드] += 1 (라벨·키워드 매핑용).
+    한 문장은 (여러 기사에 반복돼도) 같은 키로 누적 → 전역 군집 시 1회만 임베딩된다.
+    """
+    # 제목 — 한 문장으로 취급, 높은 가중.
+    t = re.sub(r"\s+", " ", str(title or "")).strip()
+    if t and len(t) >= 2:
+        t_nouns = {w for w, _ in _extract_nouns_with_pos(t, kiwi, stopwords)}
+        if t_nouns:
+            sent_weight[t] += title_weight
+            kc = sent_kws[t]
+            for w in t_nouns:
+                kc[w] += 1
+
+    # 본문 — 앞 lead_n 문장만(역피라미드: 핵심이 앞에). 그 뒤 명사는 버림.
+    full = _sentence_spans(norm_body)
+    if not full:
+        return
+    lead = full[:lead_n] if lead_n > 0 else full
+    cutoff = full[lead_n][1] if (0 < lead_n < len(full)) else len(norm_body) + 1
+    starts = [st for _, st in lead]
+    sent_nouns: Dict[int, set] = defaultdict(set)
+    for word, pos in noun_pos:
+        if pos >= cutoff:
+            continue
+        i = bisect.bisect_right(starts, pos) - 1
+        if i < 0:
+            continue
+        sent_nouns[i].add(word)
+    for i, nouns in sent_nouns.items():
+        text = lead[i][0]
+        if len(text) < min_sent_len:
+            continue
+        wt = body_base * (body_decay ** i)
+        if wt < min_sent_w:
+            wt = min_sent_w
+        sent_weight[text] += wt
+        kc = sent_kws[text]
+        for w in nouns:
+            kc[w] += 1
+
+
 def _extract_nouns(text: str, kiwi: Kiwi | None, stopwords: set[str]) -> List[str]:
     text = re.sub(r"\s+", " ", str(text)).strip()
     if not text:
@@ -365,6 +441,18 @@ def _collect_weekly_rows_from_qdrant(
     ctx_samples = int(ctx_cfg.get("samples", 3))
     ctx_nbr_k = int(ctx_cfg.get("neighbor_top_k", 5))
     sense_cfg = (config.get("keyword_extractor", {}) or {}).get("sense", {}) or {}
+    # sense 문장 모드: 키워드 포함 "문장 전체"를 수집해 임베딩 군집(제목>본문, 앞문장 가중).
+    sense_sentence = (
+        bool(sense_cfg.get("enabled", False))
+        and str(sense_cfg.get("input_mode", "sentence")) == "sentence"
+        and kiwi is not None
+    )
+    s_title_w = float(sense_cfg.get("title_weight", 3.0))
+    s_body_base = float(sense_cfg.get("body_base_weight", 1.0))
+    s_body_decay = float(sense_cfg.get("body_position_decay", 0.85))
+    s_min_w = float(sense_cfg.get("min_sentence_weight", 0.2))
+    s_min_len = int(sense_cfg.get("min_sentence_len", 12))
+    s_lead_n = int(sense_cfg.get("body_lead_n", 3))
 
     rows: List[Dict[str, str | int]] = []
     for week in weeks:
@@ -373,6 +461,8 @@ def _collect_weekly_rows_from_qdrant(
         nbr_counter: Dict[str, Dict[str, Counter]] = defaultdict(
             lambda: {"before": Counter(), "after": Counter()}
         )
+        sent_weight: Dict[str, float] = defaultdict(float)        # sense(대안 C): 문장 → 가중합
+        sent_kws: Dict[str, Counter] = defaultdict(Counter)       # 문장 → {키워드: cnt} (라벨·매핑용)
         week_kw_count: Counter = Counter()
         for art in iter_week_articles(
             week, logger=logger, qdrant_url=q_url, collection=collection,
@@ -385,6 +475,13 @@ def _collect_weekly_rows_from_qdrant(
                 norm = re.sub(r"\s+", " ", str(art["body"])).strip()
                 noun_pos = _extract_nouns_with_pos(norm, kiwi, stopwords)
                 _accumulate_context(norm, noun_pos, ctx_counter, nbr_counter)
+                if sense_sentence:
+                    _accumulate_sentences(
+                        str(art.get("title") or ""), norm, noun_pos, kiwi, stopwords,
+                        sent_weight, sent_kws,
+                        title_weight=s_title_w, body_base=s_body_base, body_decay=s_body_decay,
+                        min_sent_w=s_min_w, min_sent_len=s_min_len, lead_n=s_lead_n,
+                    )
                 nouns = [w for w, _ in noun_pos]
             else:
                 nouns = _extract_nouns(art["body"], kiwi, stopwords)
@@ -398,6 +495,7 @@ def _collect_weekly_rows_from_qdrant(
                 week, week_kw_count, ctx_counter, nbr_counter,
                 top_n=ctx_top_n, samples=ctx_samples, nbr_k=ctx_nbr_k,
                 sense_cfg=sense_cfg, logger=logger,
+                sent_weight=sent_weight, sent_kws=sent_kws,
             )
     return rows
 
@@ -413,10 +511,13 @@ def _persist_week_context(
     nbr_k: int,
     sense_cfg: dict | None = None,
     logger,
+    sent_weight: Dict[str, float] | None = None,
+    sent_kws: Dict[str, Counter] | None = None,
 ) -> None:
     """주차별 상위 top_n 빈도 키워드만 맥락(B 예문 top samples + C 주변어절 top nbr_k) 적재.
 
     sense_cfg.enabled 면 같은 top_kws 에 대해 의미 분화(sense)도 산출·적재한다.
+    input_mode=="sentence" 면 문장 임베딩 군집(sent_counter/sent_co 사용), 아니면 어절 맥락 군집.
     """
     from db import repository as repo
 
@@ -438,7 +539,51 @@ def _persist_week_context(
     )
 
     if sense_cfg and bool(sense_cfg.get("enabled", False)):
-        _persist_week_sense(week, top_kws, ctx_counter, sense_cfg, logger)
+        if str(sense_cfg.get("input_mode", "sentence")) == "sentence":
+            _persist_week_sense_sentences(
+                week, top_kws, sent_weight or {}, sent_kws or {}, sense_cfg, logger
+            )
+        else:
+            _persist_week_sense(week, top_kws, ctx_counter, sense_cfg, logger)
+
+
+def _persist_week_sense_sentences(
+    week: str,
+    top_kws: List[str],
+    sent_weight: Dict[str, float],
+    sent_kws: Dict[str, Counter],
+    sense_cfg: dict,
+    logger,
+) -> None:
+    """의미 분화(sense) + 트렌드 — 대안 C(전역 문장 군집). 임베딩 실행 환경(맥미니) 필요."""
+    from db import repository as repo
+    from steps.keyword_sense import compute_week_trend_senses
+
+    model = sense_cfg.get("model")
+    device = sense_cfg.get("device", "auto")
+
+    def embed_fn(sentences: List[str]):
+        from steps.qdrant_embed import embed_texts
+        return embed_texts(sentences, model_name=model, device=device, normalize=True)
+
+    sense_rows, trend_rows = compute_week_trend_senses(
+        week, top_kws, sent_weight, sent_kws,
+        embed_fn=embed_fn,
+        cluster_target_size=int(sense_cfg.get("cluster_target_size", 40)),
+        cluster_kmin=int(sense_cfg.get("cluster_kmin", 20)),
+        cluster_kmax=int(sense_cfg.get("cluster_kmax", 400)),
+        max_senses=int(sense_cfg.get("max_senses", 4)),
+        neighbor_top_k=int(sense_cfg.get("neighbor_top_k", 5)),
+        min_sense_share=float(sense_cfg.get("min_sense_share", 0.12)),
+        logger=logger,
+    )
+    n_sense = repo.replace_keyword_sense(week, sense_rows)
+    n_trend = repo.replace_trend_clusters(week, trend_rows)
+    n_kw = len({r[1] for r in sense_rows})
+    logger.info(
+        "키워드 의미분화(트렌드) 적재 | week=%s | 키워드=%d | sense=%d행 | 트렌드=%d",
+        week, n_kw, n_sense, n_trend,
+    )
 
 
 def _persist_week_sense(
@@ -467,6 +612,7 @@ def _persist_week_sense(
         neighbor_top_k=int(sense_cfg.get("neighbor_top_k", 5)),
         min_occ_for_split=int(sense_cfg.get("min_occ_for_split", 5)),
         min_contexts_for_split=int(sense_cfg.get("min_contexts_for_split", 3)),
+        max_contexts_per_kw=int(sense_cfg.get("max_contexts_per_kw", 80)),
     )
     n_sense = repo.replace_keyword_sense(week, sense_rows)
     n_kw = len({r[1] for r in sense_rows})

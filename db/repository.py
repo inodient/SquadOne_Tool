@@ -96,11 +96,12 @@ def replace_keyword_context(
 
 def replace_keyword_sense(
     week: str,
-    sense_rows: Sequence[Tuple[str, str, int, int, str, str, str, str]],
+    sense_rows: Sequence[Tuple[str, str, int, int, str, str, str, str, str]],
 ) -> int:
     """1단계 부가: 키워드 의미 분화(sense) 주차 단위 replace.
 
-    sense_rows: (week, keyword, sense_id, count, label, rep_before, rep_after, top_neighbors)
+    sense_rows: (week, keyword, sense_id, count, label, rep_before, rep_after, top_neighbors, rep_sentence)
+    rep_sentence: 문장 모드의 대표 문장(전체). 어절 모드는 "".
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -108,12 +109,96 @@ def replace_keyword_sense(
             if sense_rows:
                 cur.executemany(
                     "INSERT INTO newstrend.weekly_keyword_sense "
-                    "(week, keyword, sense_id, count, label, rep_before, rep_after, top_neighbors) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "(week, keyword, sense_id, count, label, rep_before, rep_after, top_neighbors, rep_sentence) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     list(sense_rows),
                 )
         conn.commit()
     return len(sense_rows)
+
+
+def replace_trend_clusters(
+    week: str,
+    trend_rows: Sequence[Tuple[str, int, int, int, str, str, str, Sequence[float]]],
+) -> int:
+    """1단계 부가: 주차 트렌드 군집(전역 문장 군집) 주차 단위 replace.
+
+    trend_rows: (week, cluster_id, size, weight, label, rep_sentence, top_keywords, centroid)
+    centroid: 군집 중심 벡터(list[float]) — 주 간 연결(thread) 비교 재료.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM newstrend.weekly_trend_clusters WHERE week=%s", (week,))
+            if trend_rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.weekly_trend_clusters "
+                    "(week, cluster_id, size, weight, label, rep_sentence, top_keywords, centroid) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    [tuple(r[:7]) + (list(r[7]),) for r in trend_rows],
+                )
+        conn.commit()
+    return len(trend_rows)
+
+
+def get_trend_clusters_range(week_from: str, week_to: str) -> List[Dict[str, object]]:
+    """[week_from, week_to] 범위 트렌드 군집 조회(주 간 연결기 입력)."""
+    out: List[Dict[str, object]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT week, cluster_id, size, weight, label, rep_sentence, top_keywords, centroid "
+                "FROM newstrend.weekly_trend_clusters "
+                "WHERE week BETWEEN %s AND %s ORDER BY week, weight DESC",
+                (week_from, week_to),
+            )
+            for r in cur.fetchall():
+                out.append({
+                    "week": r[0], "cluster_id": int(r[1]), "size": int(r[2]),
+                    "weight": int(r[3]), "label": r[4] or "", "rep_sentence": r[5] or "",
+                    "top_keywords": r[6] or "", "centroid": list(r[7] or []),
+                })
+    return out
+
+
+def replace_trend_threads(
+    week_from: str,
+    week_to: str,
+    thread_rows: Sequence[Tuple[int, str, int, int, float, str]],
+    meta_rows: Sequence[Tuple[int, int, str, str, int, str, float, int, str, str, str]],
+) -> int:
+    """주 간 트렌드 연결(thread) 범위 단위 replace.
+
+    thread_rows: (thread_id, week, cluster_id, seq, link_score, link_type)
+    meta_rows:   (thread_id, n_weeks, start_week, end_week, span_weeks, kind,
+                  drift, peak_weight, label, label_path, top_keywords)
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM newstrend.trend_threads WHERE week BETWEEN %s AND %s",
+                (week_from, week_to),
+            )
+            if thread_rows:
+                cur.executemany(
+                    "INSERT INTO newstrend.trend_threads "
+                    "(thread_id, week, cluster_id, seq, link_score, link_type) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    list(thread_rows),
+                )
+            tids = [m[0] for m in meta_rows]
+            if tids:
+                cur.execute(
+                    "DELETE FROM newstrend.trend_threads_meta WHERE thread_id = ANY(%s)", (tids,)
+                )
+                cur.executemany(
+                    "INSERT INTO newstrend.trend_threads_meta "
+                    "(thread_id, n_weeks, start_week, end_week, span_weeks, kind, "
+                    " drift, peak_weight, label, label_path, top_keywords) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    list(meta_rows),
+                )
+        conn.commit()
+    return len(thread_rows)
 
 
 # ── 2단계 (증분) ─────────────────────────────────────────────────

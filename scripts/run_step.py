@@ -44,8 +44,10 @@ def _week_to_dates(week: str) -> tuple[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="뉴스 트렌드 단계별 실행")
-    ap.add_argument("step", choices=["1", "2", "3", "4", "cls", "56", "5", "6", "7"], help="단계 번호(5+6은 56, cls=키워드 노이즈 분류)")
+    ap.add_argument("step", choices=["1", "2", "3", "4", "cls", "56", "5", "6", "7", "trend"], help="단계 번호(5+6은 56, cls=키워드 노이즈 분류, trend=주 간 트렌드 연결)")
     ap.add_argument("--week", default=None, help="편의: 단일 주차(YYYY-Www) → 날짜범위/coverage 자동")
+    ap.add_argument("--from-week", default=None, help="trend 단계: 연결 범위 시작 주차(YYYY-Www)")
+    ap.add_argument("--to-week", default=None, help="trend 단계: 연결 범위 끝 주차(YYYY-Www)")
     ap.add_argument("--start-date", default=None)
     ap.add_argument("--end-date", default=None)
     ap.add_argument("--base-start-week", default=None)
@@ -109,6 +111,20 @@ def main() -> int:
             test_mode=args.test_mode,
             test_max_weeks=args.test_max_weeks,
         )
+    elif step == "trend":
+        # 주 간 트렌드 연결(thread). 범위 [--from-week, --to-week] (없으면 --week 단일).
+        import json as _json
+        from pathlib import Path as _Path
+        from steps.trend_linker import run as run_trend_linker
+        fw = args.from_week or args.week
+        tw = args.to_week or args.week
+        if not fw or not tw:
+            ap.error("trend 단계는 --from-week 와 --to-week(또는 --week) 가 필요합니다")
+            return 2
+        cfg_path = _Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
+        cfg = _json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+        n = run_trend_linker(fw, tw, config=cfg, logger=logger)
+        out = {"from_week": fw, "to_week": tw, "threads": n}
     else:
         ap.error(f"알 수 없는 step: {step}")
         return 2

@@ -82,14 +82,36 @@
     "sense": {
       "enabled": true,
       "method": "embedding",
+      "input_mode": "sentence",
       "model": null,
       "device": "auto",
-      "distance_threshold": 0.35,
-      "max_senses": 6,
+      "max_senses": 4,
       "neighbor_top_k": 5,
-      "min_occ_for_split": 5,
-      "min_contexts_for_split": 3
+      "title_weight": 3.0,
+      "body_base_weight": 1.0,
+      "body_position_decay": 0.85,
+      "min_sentence_weight": 0.2,
+      "min_sentence_len": 12,
+      "body_lead_n": 5,
+      "cluster_target_size": 40,
+      "cluster_kmin": 20,
+      "cluster_kmax": 400,
+      "min_sense_share": 0.12,
+      "_legacy_context_mode": {
+        "distance_threshold": 0.45,
+        "max_contexts_per_kw": 80,
+        "min_occ_for_split": 5,
+        "min_contexts_for_split": 3
+      }
     }
+  },
+  "trend_linker": {
+    "alpha": 0.6,
+    "beta": 0.4,
+    "theta_near": 0.55,
+    "theta_gap": 0.6,
+    "max_gap_weeks": 30,
+    "min_ent_jaccard": 0.25
   },
   "trend_extractor": {
     "anchor_top_n": 5,

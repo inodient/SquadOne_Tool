@@ -19,6 +19,11 @@ export const STAGES: StageDef[] = [
   {
     n: 1, slug: "1", title: "1 키워드", desc: "keyword_extractor — Qdrant 본문→Kiwi 명사→주차 빈도",
     tables: [
+      { name: "trend_threads_summary", label: "🧵 트렌드 연결(thread) 요약 — 종류(반복/진화)·기간·라벨궤적", note: "주 간 연결: 동일 반복 + 진화(1심→2심→3심). run_step trend 후 표시" },
+      { name: "trend_threads_disp", label: "🧵 트렌드 thread 타임라인 — thread별 주차 흐름·연결점수", note: "1심→2심→3심 추적" },
+      { name: "weekly_trend_clusters_disp", label: "📈 주차 트렌드 (전역 문장 군집) — 트렌드·가중치·대표어·대표문장", note: "제목+리드 문장을 전역 군집한 그 주의 이야기 갈래" },
+      { name: "weekly_keyword_sense_multi", label: "🔀 다의어 키워드 (트렌드 2개+) — 의미수·의미 그룹(빈도순)", note: "여러 트렌드에 걸친 키워드" },
+      { name: "weekly_keyword_sense_single", label: "단일 트렌드 키워드 (week·keyword·빈도·의미·대표맥락·주변어절)" },
       { name: "weekly_keywords_ctx_top", label: "맥락 보유 키워드 (week·keyword·source·count·대표맥락·주변어절)" },
       { name: "weekly_keywords_ctx_rest", label: "기타 키워드 (week·keyword·source·count)" },
     ],
