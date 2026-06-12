@@ -2,6 +2,7 @@
 
 # Secrets
 .env
+.env.bak.*
 
 # Python
 __pycache__/
@@ -12,4 +13,3 @@ venv/
 
 # macOS
 .DS_Store
-.env.bak.repoint_20260610_194336
