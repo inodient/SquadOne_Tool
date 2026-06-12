@@ -174,6 +174,14 @@ def replace_trend_threads(
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
+            # 메타는 week 컬럼이 없고 thread_id 는 매 실행 재부여되므로, 범위에 멤버를 가진
+            # 기존 세대의 thread_id 를 멤버 삭제 전에 모아 메타도 함께 제거(누적 방지).
+            cur.execute(
+                "DELETE FROM newstrend.trend_threads_meta WHERE thread_id IN "
+                "(SELECT DISTINCT thread_id FROM newstrend.trend_threads "
+                " WHERE week BETWEEN %s AND %s)",
+                (week_from, week_to),
+            )
             cur.execute(
                 "DELETE FROM newstrend.trend_threads WHERE week BETWEEN %s AND %s",
                 (week_from, week_to),
@@ -187,6 +195,7 @@ def replace_trend_threads(
                 )
             tids = [m[0] for m in meta_rows]
             if tids:
+                # 새 세대 thread_id 도 안전 제거 후 삽입(동일 id 재사용 시 중복 방지).
                 cur.execute(
                     "DELETE FROM newstrend.trend_threads_meta WHERE thread_id = ANY(%s)", (tids,)
                 )

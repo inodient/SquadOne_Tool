@@ -92,11 +92,12 @@
       "body_position_decay": 0.85,
       "min_sentence_weight": 0.2,
       "min_sentence_len": 12,
-      "body_lead_n": 5,
-      "cluster_target_size": 40,
-      "cluster_kmin": 20,
-      "cluster_kmax": 400,
+      "body_lead_n": 3,
+      "cluster_target_size": 135,
+      "cluster_kmin": 10,
+      "cluster_kmax": 110,
       "min_sense_share": 0.12,
+      "noise_keywords": ["포토", "기자", "속보", "단독", "사진", "오늘", "운세", "오후", "오전", "이날", "별세", "부고", "인사", "동정", "영상", "한겨레", "연합뉴스", "사설", "칼럼", "오피니언", "기고", "발인", "정례", "무관", "정정", "알림", "지면", "화보", "뉴시스", "아시아투데이", "사람", "자신", "좋다", "문장", "이야기", "작가", "생각", "정도", "경우", "모습", "대로", "이번", "관련", "지난", "의원", "대표", "대통령", "국민", "원내", "위원장", "정부", "시민", "여당", "야당", "서울", "경기", "경기도", "서울시", "인천", "백운산", "지역", "세계", "전국"],
       "_legacy_context_mode": {
         "distance_threshold": 0.45,
         "max_contexts_per_kw": 80,
@@ -106,12 +107,13 @@
     }
   },
   "trend_linker": {
-    "alpha": 0.6,
-    "beta": 0.4,
-    "theta_near": 0.55,
-    "theta_gap": 0.6,
+    "alpha": 0.15,
+    "beta": 0.85,
+    "theta_near": 0.42,
+    "theta_gap": 0.47,
     "max_gap_weeks": 30,
-    "min_ent_jaccard": 0.25
+    "min_ent_jaccard": 0.25,
+    "min_ent_jaccard_near": 0.10
   },
   "trend_extractor": {
     "anchor_top_n": 5,
@@ -141,7 +143,7 @@
   },
   "vector_db": {
     "provider": "qdrant",
-    "qdrant_url": "http://localhost:6333",
+    "qdrant_url": null,
     "collection": "news_10y_ko_v1",
     "week_filter_field": "week",
     "date_field": "date",

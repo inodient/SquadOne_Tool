@@ -94,47 +94,68 @@ def _is_valid_noun(word: str) -> bool:
     return len(word) >= 2 and bool(re.search(r"[가-힣]|[A-Za-z]{2,}", word))
 
 
-def _extract_nouns_with_pos(text: str, kiwi: Kiwi | None, stopwords: set[str]) -> List[Tuple[str, int]]:
-    """_extract_nouns 와 동일 규칙 + (공백 정규화 text 기준) char 시작위치.
+# 범용/경동사(트렌드 행위로 의미 없음) — VV 추출 시 제외. 액션성 동사(열리다·밝히다·나서다)는 보존.
+_GENERIC_VERBS = {
+    "하다", "되다", "있다", "없다", "같다", "말다", "보다", "오다", "가다", "주다", "받다",
+    "싶다", "않다", "못하다", "위하다", "대하다", "통하다", "따르다", "들다", "나다", "두다",
+    "내다", "지다", "삼다", "맞다", "남다", "쓰다", "놓다", "넣다", "보이다", "알다", "모르다",
+    "나오다", "지나다", "만나다", "나타나다", "지내다", "들어가다", "나가다", "들어오다",
+    "나서다", "보내다", "다니다", "지키다", "이루다", "이르다",
+}
+
+
+def _extract_nouns_with_pos(
+    text: str, kiwi: "Kiwi | None", stopwords: set[str], *,
+    include_person: bool = False, include_verbs: bool = False,
+) -> List[Tuple[str, int, bool, str]]:
+    """(공백 정규화 text 기준) char 시작위치 + is_person + action_type 부착 추출.
 
     맥락(context) 수집 시 명사 위치를 어절에 매핑하는 데 쓴다.
+    include_person=True 면 고유명사(NNP)도 포함(sense/트렌드용). 기본 제외(weekly_keywords 불변).
+    include_verbs=True 면 순수동사(VV)도 포함(설명가능한 말묶음용). 기본 제외(weekly_keywords 불변).
+    action_type: ''(엔티티) | 'verb'(VV 동사) | 'noun'(NNG+하/되/시키=동작명사 선고하다).
+    Kiwi(sbg) tokenize 는 NER 을 주지 않으므로 NNP 태그로 인물 판별한다.
+    반환 (word, start, is_person, action_type).
     """
-    def _is_person_entity(token_obj: object) -> bool:
-        ner = getattr(token_obj, "ner", None)
-        if not ner:
-            return False
-        try:
-            if isinstance(ner, (list, tuple)):
-                first = ner[0]
-                if isinstance(first, (list, tuple)) and first:
-                    return str(first[0]) == "PS"
-                return str(first) == "PS"
-        except Exception:
-            return False
-        return False
-
     text = re.sub(r"\s+", " ", str(text)).strip()
     if not text:
         return []
     if kiwi is not None:
-        out: List[Tuple[str, int]] = []
-        for token in kiwi.tokenize(text):
-            if token.tag.startswith("J"):
+        out: List[Tuple[str, int, bool, str]] = []
+        toks = kiwi.tokenize(text)
+        for idx, token in enumerate(toks):
+            tag = token.tag
+            if tag.startswith("J"):
                 continue
-            if _is_person_entity(token):
-                continue
-            if token.tag == "NNG":
+            is_person = tag == "NNP"
+            action_type = ""
+            if is_person:
+                if not include_person:
+                    continue
+                word = _normalize_noun(token.form)  # 고유명사(NNP)를 sense/트렌드용으로 포함
+            elif tag == "NNG":
                 word = _normalize_noun(token.form)
-            elif token.tag == "VA":
+                nxt = toks[idx + 1] if idx + 1 < len(toks) else None
+                if nxt is not None and nxt.tag == "XSV":
+                    action_type = "noun"  # 동작명사(선고+하다 → '선고' 자체는 NNG, 행위 표지)
+            elif tag == "VV":
+                if not include_verbs:
+                    continue
+                base = _normalize_noun(token.form)
+                word = "" if not base else (base if base.endswith("다") else f"{base}다")
+                if word in _GENERIC_VERBS:
+                    continue  # 경동사 제외
+                action_type = "verb"
+            elif tag == "VA":
                 base = _normalize_noun(token.form)
                 word = "" if not base else (base if base.endswith("다") else f"{base}다")
             else:
                 continue
             if _is_valid_noun(word) and word not in stopwords:
-                out.append((word, int(getattr(token, "start", 0))))
+                out.append((word, int(getattr(token, "start", 0)), is_person, action_type))
         return out
     return [
-        (m.group(), m.start())
+        (m.group(), m.start(), False, "")
         for m in re.finditer(r"[가-힣]{2,}", text)
         if m.group() not in stopwords
     ]
@@ -189,14 +210,41 @@ def _sentence_spans(norm_text: str) -> List[Tuple[str, int]]:
     return spans
 
 
+# 바이라인/보일러플레이트 문장 탐지 — 기자명·매체명이 NNP 인물로 유입돼 트렌드 라벨을
+# 오염시키는 것을 차단(예: "[아시아투데이 이병화]", "한윤종 기자 hyj0709@segye.com",
+# "아시아투데이 박성일 기자 = …", "기사 특정내용과 무관."). 고정밀(일반 문장 오탐 최소).
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_BRACKET_BYLINE_RE = re.compile(r"^[\[\(][^\]\)]{0,40}[\]\)]$")
+_REPORTER_PREFIX_RE = re.compile(r"^.{0,25}?(기자|특파원|논설위원|앵커)\s*[=:]")
+_BYLINE_MARK_RE = re.compile(r"(기자|특파원|논설위원|뉴스|투데이|일보|신문|닷컴|통신)")
+_BOILERPLATE_RE = re.compile(r"무단\s*전재|재배포\s*금지|저작권자|특정\s*내용과\s*무관|영상편집|그래픽\s*=")
+
+
+def _is_byline_or_boilerplate(text: str) -> bool:
+    """기자 바이라인/매체 정형구 문장이면 True(수집 제외). 일반 문장은 통과."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _EMAIL_RE.search(t):
+        return True  # 이메일 포함 = 거의 항상 바이라인
+    if _BOILERPLATE_RE.search(t):
+        return True  # 저작권·무관 등 정형구
+    if _BRACKET_BYLINE_RE.match(t) and (_BYLINE_MARK_RE.search(t) or "=" in t):
+        return True  # [매체명 기자명] 또는 [지역=매체] 형태
+    if _REPORTER_PREFIX_RE.match(t):
+        return True  # "…기자 = 본문" 의 바이라인 선두(기자명 오염 차단)
+    return False
+
+
 def _accumulate_sentences(
     title: str,
     norm_body: str,
-    noun_pos: List[Tuple[str, int]],
+    noun_pos: List[Tuple[str, int, str]],
     kiwi: "Kiwi | None",
     stopwords: set[str],
     sent_weight: Dict[str, float],
     sent_kws: Dict[str, Counter],
+    action_words: set[str],
     *,
     title_weight: float,
     body_base: float,
@@ -204,17 +252,29 @@ def _accumulate_sentences(
     min_sent_w: float,
     min_sent_len: int,
     lead_n: int,
+    noise_kw: set[str] | None = None,
 ) -> None:
     """sense(대안 C) 입력 수집 — 문장 중심. 제목 + 본문 리드 lead_n 문장만.
 
     우선순위: 제목(title_weight) > 본문. 본문은 앞 문장일수록 큰 가중(body_base * body_decay**i).
     sent_weight[문장] += weight,  sent_kws[문장][키워드] += 1 (라벨·키워드 매핑용).
+    noise_kw 의 상용어는 키워드에서 제외(라벨 노이즈·문장 수 절감); 남는 키워드 없으면 문장 자체 제외.
     한 문장은 (여러 기사에 반복돼도) 같은 키로 누적 → 전역 군집 시 1회만 임베딩된다.
     """
+    noise = noise_kw or set()
+
+    def _filter_va(words: set[str]) -> set[str]:
+        # VA 형용사(다-종결 비액션)는 제외, VV 동사(다-종결 액션=action_words)는 보존.
+        return {w for w in words if not (w.endswith("다") and w not in action_words)}
+
     # 제목 — 한 문장으로 취급, 높은 가중.
     t = re.sub(r"\s+", " ", str(title or "")).strip()
-    if t and len(t) >= 2:
-        t_nouns = {w for w, _ in _extract_nouns_with_pos(t, kiwi, stopwords)}
+    if t and len(t) >= 2 and not _is_byline_or_boilerplate(t):
+        t_toks = _extract_nouns_with_pos(t, kiwi, stopwords, include_person=True, include_verbs=True)
+        for w, _p, _isp, at in t_toks:
+            if at:
+                action_words.add(w)  # 액션(동사/동작명사) 표지 수집 → 라벨 조합용
+        t_nouns = _filter_va({w for w, _, _, _ in t_toks} - noise)
         if t_nouns:
             sent_weight[t] += title_weight
             kc = sent_kws[t]
@@ -229,7 +289,9 @@ def _accumulate_sentences(
     cutoff = full[lead_n][1] if (0 < lead_n < len(full)) else len(norm_body) + 1
     starts = [st for _, st in lead]
     sent_nouns: Dict[int, set] = defaultdict(set)
-    for word, pos in noun_pos:
+    for word, pos, atype in noun_pos:
+        if atype:
+            action_words.add(word)  # 액션 표지 수집(컷오프 무관, 전역 단어 속성)
         if pos >= cutoff:
             continue
         i = bisect.bisect_right(starts, pos) - 1
@@ -240,12 +302,17 @@ def _accumulate_sentences(
         text = lead[i][0]
         if len(text) < min_sent_len:
             continue
+        if _is_byline_or_boilerplate(text):
+            continue  # 기자 바이라인/정형구 문장 제외(기자명 라벨 오염 차단)
+        kept = _filter_va(nouns - noise)  # VA 형용사 제외(VV 동사는 보존)
+        if not kept:
+            continue  # 노이즈/형용사만 있는 문장(운세·포토 등) 제외
         wt = body_base * (body_decay ** i)
         if wt < min_sent_w:
             wt = min_sent_w
         sent_weight[text] += wt
         kc = sent_kws[text]
-        for w in nouns:
+        for w in kept:
             kc[w] += 1
 
 
@@ -453,6 +520,7 @@ def _collect_weekly_rows_from_qdrant(
     s_min_w = float(sense_cfg.get("min_sentence_weight", 0.2))
     s_min_len = int(sense_cfg.get("min_sentence_len", 12))
     s_lead_n = int(sense_cfg.get("body_lead_n", 3))
+    s_noise = set(sense_cfg.get("noise_keywords", []))  # sense 전용: 노이즈 키워드 제외(weekly_keywords 불변)
 
     rows: List[Dict[str, str | int]] = []
     for week in weeks:
@@ -463,6 +531,7 @@ def _collect_weekly_rows_from_qdrant(
         )
         sent_weight: Dict[str, float] = defaultdict(float)        # sense(대안 C): 문장 → 가중합
         sent_kws: Dict[str, Counter] = defaultdict(Counter)       # 문장 → {키워드: cnt} (라벨·매핑용)
+        action_words: set[str] = set()                            # 액션(동사/동작명사) 단어 표지 → 라벨 조합용
         week_kw_count: Counter = Counter()
         for art in iter_week_articles(
             week, logger=logger, qdrant_url=q_url, collection=collection,
@@ -473,14 +542,21 @@ def _collect_weekly_rows_from_qdrant(
             source_val = art["source"] or "unknown"
             if write_context:
                 norm = re.sub(r"\s+", " ", str(art["body"])).strip()
-                noun_pos = _extract_nouns_with_pos(norm, kiwi, stopwords)
+                noun_pos_full = _extract_nouns_with_pos(
+                    norm, kiwi, stopwords,
+                    include_person=sense_sentence, include_verbs=sense_sentence,
+                )
+                # weekly_keywords·맥락: 인물·동사 제외(불변). NNG 동작명사는 기존대로 유지.
+                noun_pos = [(w, p) for w, p, isp, at in noun_pos_full if not isp and at != "verb"]
                 _accumulate_context(norm, noun_pos, ctx_counter, nbr_counter)
                 if sense_sentence:
+                    sense_noun_pos = [(w, p, at) for w, p, _isp, at in noun_pos_full]  # sense: 인물·동사 포함 + 액션표지
                     _accumulate_sentences(
-                        str(art.get("title") or ""), norm, noun_pos, kiwi, stopwords,
-                        sent_weight, sent_kws,
+                        str(art.get("title") or ""), norm, sense_noun_pos, kiwi, stopwords,
+                        sent_weight, sent_kws, action_words,
                         title_weight=s_title_w, body_base=s_body_base, body_decay=s_body_decay,
                         min_sent_w=s_min_w, min_sent_len=s_min_len, lead_n=s_lead_n,
+                        noise_kw=s_noise,
                     )
                 nouns = [w for w, _ in noun_pos]
             else:
@@ -495,7 +571,7 @@ def _collect_weekly_rows_from_qdrant(
                 week, week_kw_count, ctx_counter, nbr_counter,
                 top_n=ctx_top_n, samples=ctx_samples, nbr_k=ctx_nbr_k,
                 sense_cfg=sense_cfg, logger=logger,
-                sent_weight=sent_weight, sent_kws=sent_kws,
+                sent_weight=sent_weight, sent_kws=sent_kws, action_words=action_words,
             )
     return rows
 
@@ -513,6 +589,7 @@ def _persist_week_context(
     logger,
     sent_weight: Dict[str, float] | None = None,
     sent_kws: Dict[str, Counter] | None = None,
+    action_words: set[str] | None = None,
 ) -> None:
     """주차별 상위 top_n 빈도 키워드만 맥락(B 예문 top samples + C 주변어절 top nbr_k) 적재.
 
@@ -541,7 +618,8 @@ def _persist_week_context(
     if sense_cfg and bool(sense_cfg.get("enabled", False)):
         if str(sense_cfg.get("input_mode", "sentence")) == "sentence":
             _persist_week_sense_sentences(
-                week, top_kws, sent_weight or {}, sent_kws or {}, sense_cfg, logger
+                week, top_kws, sent_weight or {}, sent_kws or {}, sense_cfg, logger,
+                action_words=action_words or set(),
             )
         else:
             _persist_week_sense(week, top_kws, ctx_counter, sense_cfg, logger)
@@ -554,6 +632,7 @@ def _persist_week_sense_sentences(
     sent_kws: Dict[str, Counter],
     sense_cfg: dict,
     logger,
+    action_words: set[str] | None = None,
 ) -> None:
     """의미 분화(sense) + 트렌드 — 대안 C(전역 문장 군집). 임베딩 실행 환경(맥미니) 필요."""
     from db import repository as repo
@@ -568,7 +647,7 @@ def _persist_week_sense_sentences(
 
     sense_rows, trend_rows = compute_week_trend_senses(
         week, top_kws, sent_weight, sent_kws,
-        embed_fn=embed_fn,
+        embed_fn=embed_fn, action_words=action_words or set(),
         cluster_target_size=int(sense_cfg.get("cluster_target_size", 40)),
         cluster_kmin=int(sense_cfg.get("cluster_kmin", 20)),
         cluster_kmax=int(sense_cfg.get("cluster_kmax", 400)),

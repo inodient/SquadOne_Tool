@@ -3,6 +3,7 @@ import { WeekProvider, useWeek } from "./week";
 import { STAGES } from "./stages";
 import StageView from "./pages/StageView";
 import Home from "./pages/Home";
+import TrendDashboard from "./pages/TrendDashboard";
 import TrendExplorer from "./pages/TrendExplorer";
 import Detail from "./pages/Detail";
 import WeekCompare from "./pages/WeekCompare";
@@ -44,6 +45,7 @@ function Header() {
       </nav>
       {/* 기존 대시보드(보조) */}
       <nav className="legacy-nav">
+        <NavLink to="/trend-dashboard">🧵 트렌드 대시보드</NavLink>
         <NavLink to="/dashboard" end>
           이번 주 추천
         </NavLink>
@@ -64,6 +66,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/stage/1" replace />} />
           <Route path="/stage/:slug" element={<StageView />} />
           {/* 기존 대시보드 라우트 */}
+          <Route path="/trend-dashboard" element={<TrendDashboard />} />
           <Route path="/dashboard" element={<Home />} />
           <Route path="/trends" element={<TrendExplorer />} />
           <Route path="/trend/:keyword" element={<Detail />} />

@@ -18,7 +18,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-ENCODE_BATCH_SIZE = 64
+ENCODE_BATCH_SIZE = int(os.environ.get("SQUADONE_EMBED_BATCH", "256"))
 
 
 def _pick_device(device_arg: str) -> str:

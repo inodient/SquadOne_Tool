@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from collections import Counter
 from typing import Callable, Dict, List, Sequence, Tuple
 
@@ -267,6 +268,7 @@ def compute_week_trend_senses(
     sent_kws: Dict[str, Counter],
     *,
     embed_fn: EmbedFn,
+    action_words: set | None = None,
     cluster_target_size: int = 40,
     cluster_kmin: int = 20,
     cluster_kmax: int = 400,
@@ -274,6 +276,7 @@ def compute_week_trend_senses(
     neighbor_top_k: int = 5,
     min_sense_share: float = 0.12,
     min_sense_weight: float = 1.0,
+    trim_sim: float = 0.0,
     logger=logger,
 ) -> Tuple[List[SenseRow], List[TrendRow]]:
     """대안 C — 전역 문장 군집(트렌드) → 키워드 sense 매핑.
@@ -289,9 +292,55 @@ def compute_week_trend_senses(
 
     logger.info("sense(트렌드) 임베딩 | week=%s | 고유문장=%d", week, n)
     vectors = embed_fn(sentences)
+
+    # K-스윕용 캐시 덤프(env 게이트, 프로덕션 무영향). 임베딩이 비싸므로 1회 저장 후
+    # 오프라인에서 K 만 바꿔 군집/eval 반복(scripts/sweep_k.py). 결정적이라 재현·검증 가능.
+    _cache_dir = os.getenv("SQUADONE_SENSE_CACHE_DIR")
+    if _cache_dir:
+        try:
+            os.makedirs(_cache_dir, exist_ok=True)
+            import pickle
+            path = os.path.join(_cache_dir, f"sense_cache_{week}.pkl")
+            with open(path, "wb") as fh:
+                pickle.dump(
+                    {
+                        "week": week,
+                        "sentences": sentences,
+                        "vectors": np.asarray(vectors, dtype=np.float32),
+                        "sent_weight": dict(sent_weight),
+                        "sent_kws": {s: dict(c) for s, c in sent_kws.items()},
+                        "top_kws": list(top_kws),
+                        "action_words": list(action_words or set()),
+                    },
+                    fh, protocol=pickle.HIGHEST_PROTOCOL,
+                )
+            logger.info("sense 캐시 저장 | week=%s | path=%s | 문장=%d", week, path, n)
+        except Exception as exc:  # 캐시 실패가 파이프라인을 막지 않게
+            logger.warning("sense 캐시 저장 실패 | week=%s | %s", week, exc)
+
     labels, centers = _cluster_sentences_global(
         vectors, target_size=cluster_target_size, kmin=cluster_kmin, kmax=cluster_kmax
     )
+
+    # 꼬리 이탈문장 trim(옵션, 기본 off). KMeans 는 갈 곳 없는 잔여 문장도 가장 가까운
+    # centroid 에 강제 배정 → 응집 코어에 이질 꼬리가 붙어 라벨/키워드를 오염시킨다(진단).
+    # centroid 코사인 < trim_sim 인 멤버를 label=-1 로 군집에서 제외: 군집 수는 불변,
+    # 응집도↑·라벨 정화. 제외 문장은 어떤 트렌드에도 기여하지 않는다(노이즈 취급).
+    if trim_sim and trim_sim > 0 and len(centers):
+        _ct = np.asarray(centers, dtype=np.float32)
+        _ct = _ct / (np.linalg.norm(_ct, axis=1, keepdims=True) + 1e-9)
+        _vt = np.asarray(vectors, dtype=np.float32)
+        _vt = _vt / (np.linalg.norm(_vt, axis=1, keepdims=True) + 1e-9)
+        _trimmed = 0
+        _new: List[int] = []
+        for _i, _lab in enumerate(labels):
+            if 0 <= _lab < len(_ct) and float(np.dot(_ct[_lab], _vt[_i])) >= trim_sim:
+                _new.append(_lab)
+            else:
+                _new.append(-1)
+                _trimmed += 1
+        labels = _new
+        logger.info("trim | week=%s | trim_sim=%.2f | 제외문장=%d/%d", week, trim_sim, _trimmed, n)
 
     top_set = set(top_kws)
 
@@ -300,6 +349,8 @@ def compute_week_trend_senses(
     cluster_kw: Dict[int, Counter] = {}
     kw_cluster_w: Dict[str, Dict[int, float]] = {}
     for sent, lab in zip(sentences, labels):
+        if lab < 0:  # trim 으로 제외된 이탈문장
+            continue
         w = sent_weight[sent]
         cluster_items.setdefault(lab, []).append((sent, w))
         ck = cluster_kw.setdefault(lab, Counter())
@@ -324,15 +375,46 @@ def compute_week_trend_senses(
         )
         return [t for t, _ in scored[:k]]
 
+    actions = action_words or set()
+
+    def _compose_label(topk: List[str]) -> str:
+        """설명가능한 말묶음: [엔티티명사] + [액션(동사/동작명사)]. 예 "내란재판 선고".
+
+        엔티티만 있으면 상위 2개(기존), 액션만 있으면 상위 2개. 둘 다 있으면 엔티티+액션.
+        """
+        ents = [t for t in topk if t not in actions]
+        acts = [t for t in topk if t in actions]
+        if ents and acts:
+            return f"{ents[0]} {acts[0]}"
+        if ents:
+            return " ".join(ents[:2])
+        if acts:
+            return " ".join(acts[:2])
+        return ""
+
+    # 대표문장 = centroid 최근접 문장. 최고가중(제목)은 군집과 무관한 제목 이상치를 뽑는
+    # 문제가 있다(예: 대선 군집의 rep 이 "이마트24 신임 대표 내정"). 중심에 가장 가까운
+    # 문장이 그 트렌드를 가장 잘 대표한다.
+    _arr = np.asarray(vectors, dtype=np.float32)
+    _cn = np.asarray(centers, dtype=np.float32)
+    _cn = _cn / (np.linalg.norm(_cn, axis=1, keepdims=True) + 1e-9)
+    _best_sim: Dict[int, float] = {}
+    _best_rep: Dict[int, str] = {}
+    for _s, _lab, _v in zip(sentences, labels, _arr):
+        _nv = _v / (np.linalg.norm(_v) + 1e-9)
+        _sim = float(np.dot(_cn[_lab], _nv)) if 0 <= _lab < len(_cn) else -1.0
+        if _lab not in _best_sim or _sim > _best_sim[_lab]:
+            _best_sim[_lab] = _sim
+            _best_rep[_lab] = _s
+
     cluster_label: Dict[int, str] = {}
     cluster_rep: Dict[int, str] = {}
     cluster_topkw: Dict[int, List[str]] = {}
     for c, items in cluster_items.items():
-        rep, _ = max(items, key=lambda sw: sw[1])
-        cluster_rep[c] = rep
+        cluster_rep[c] = _best_rep.get(c) or max(items, key=lambda sw: sw[1])[0]
         topk = _distinctive(cluster_kw[c], neighbor_top_k)
         cluster_topkw[c] = topk
-        cluster_label[c] = topk[0] if topk else ""
+        cluster_label[c] = _compose_label(topk)
 
     # 키워드 sense — 비중 큰 트렌드만(롱테일 군집 제외), 상위 max_senses.
     sense_rows: List[SenseRow] = []
